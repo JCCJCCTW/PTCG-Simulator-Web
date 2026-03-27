@@ -715,6 +715,17 @@ function resolveEvolutionStageForEntry(cardLike) {
 }
 
 function buildDefaultImageRefs(cardLike) {
+  // 優先從 catalog 取得本地圖片 imageRefs（deck-builder-data 本地圖片優先）
+  const s = normalizeSeries(cardLike && cardLike.series || "");
+  const n = normalizeCardNumber(cardLike && cardLike.number || "");
+  if (s && n && runtime.deckBuilderCatalogBySeriesNumber) {
+    const key = `${s}|${n}`.toLowerCase();
+    const matches = runtime.deckBuilderCatalogBySeriesNumber.get(key);
+    if (matches && matches.length > 0 && matches[0].imageRefs && matches[0].imageRefs.primary) {
+      return cloneImageRefs(matches[0].imageRefs);
+    }
+  }
+  // fallback: 線上圖片 URL
   const cardId = resolveCardIdForEntry(cardLike);
   const onlineById = cardId ? getCardImageUrlById(cardId) : "";
   return {
@@ -4550,9 +4561,11 @@ function updateDeckBuilderWindowTitle() {
   const delta = total - 60;
   const status = validation.valid ? "可儲存" : (delta > 0 ? `超出${delta}張` : `尚差${Math.abs(delta)}張`);
   const title = `PTCG 牌組編輯器｜${deckName}｜${total}/60｜${status}`;
-  document.title = title;
-  if (IS_DECK_BUILDER_WINDOW && runtime.ipcRenderer) {
-    runtime.ipcRenderer.send("set-deck-builder-window-title", title);
+  if (IS_DECK_BUILDER_WINDOW) {
+    document.title = title;
+    if (runtime.ipcRenderer) {
+      runtime.ipcRenderer.send("set-deck-builder-window-title", title);
+    }
   }
 }
 
