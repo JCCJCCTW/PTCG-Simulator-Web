@@ -1,4 +1,4 @@
-const CACHE_NAME = "ptcg-v1";
+const CACHE_NAME = "ptcg-v2";
 const CORE_ASSETS = [
   "./index.html",
   "./app.js",

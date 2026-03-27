@@ -136,7 +136,8 @@ const ACTION_TYPES = {
   TOGGLE_GREAT_VOID: "TOGGLE_GREAT_VOID",
   TOGGLE_HAND_VISIBILITY: "TOGGLE_HAND_VISIBILITY",
   CHAT_MESSAGE: "CHAT_MESSAGE",
-  COIN_TOSS: "COIN_TOSS"
+  COIN_TOSS: "COIN_TOSS",
+  MULLIGAN_RESULT: "MULLIGAN_RESULT"
 };
 const CUSTOM_BG_STORAGE_KEY = "ptcg.customBackgroundImage";
 const CUSTOM_BG_STRENGTH_KEY = "ptcg.customBackgroundStrength";
@@ -699,6 +700,20 @@ function resolveCardIdForEntry(cardLike) {
   return 0;
 }
 
+function resolveEvolutionStageForEntry(cardLike) {
+  if (cardLike && cardLike.evolutionStage) return String(cardLike.evolutionStage).trim();
+  const s = normalizeSeries(cardLike && cardLike.series || "");
+  const n = normalizeCardNumber(cardLike && cardLike.number || "");
+  if (s && n && runtime.deckBuilderCatalogBySeriesNumber) {
+    const key = `${s}|${n}`.toLowerCase();
+    const matches = runtime.deckBuilderCatalogBySeriesNumber.get(key);
+    if (matches && matches.length > 0 && matches[0].evolutionStage) {
+      return String(matches[0].evolutionStage).trim();
+    }
+  }
+  return "";
+}
+
 function buildDefaultImageRefs(cardLike) {
   const cardId = resolveCardIdForEntry(cardLike);
   const onlineById = cardId ? getCardImageUrlById(cardId) : "";
@@ -1257,7 +1272,7 @@ function buildCardsFromEntries(entries, owner, startId) {
         name: entry.name,
         cardType: entry.cardType,
         elementType: entry.elementType || inferElementTypeByText(entry.name),
-        evolutionStage: entry.evolutionStage || "",
+        evolutionStage: resolveEvolutionStageForEntry(entry),
         series: entry.series,
         number: entry.number,
         imageRefs: getDeckImageRefs(owner, syncId, entry),
@@ -1712,7 +1727,7 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
   const deckCards = getCardsInZone(deckZoneId);
   if (deckCards.length === 0) {
     showToast("牌組為空，無法開始新對局。", "warn", 2200);
-    return false;
+    return { ok: false, mulliganCount: 0 };
   }
 
   let mulliganCount = 0;
@@ -1731,10 +1746,11 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
     }
     appendGameLog(`${ownerLabel}抽取 7 張手牌`);
 
-    // 檢查是否有基礎寶可夢
-    const hasBasic = drawnCards.some((card) =>
-      card.cardType === "Pokemon" && card.evolutionStage === "基礎"
-    );
+    // 檢查是否有基礎寶可夢（同時檢查 evolutionStage 和 cardType）
+    const hasBasic = drawnCards.some((card) => {
+      const stage = card.evolutionStage || resolveEvolutionStageForEntry(card);
+      return stage === "基礎";
+    });
 
     if (hasBasic) {
       // 有基礎寶可夢 → 自動放置獎勵卡
@@ -1748,12 +1764,11 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
       break;
     }
 
-    // 沒有基礎寶可夢 → 顯示確認重抽視窗
+    // 沒有基礎寶可夢 → 靜默重抽（不彈視窗）
     mulliganCount += 1;
     appendGameLog(`${ownerLabel}手牌中沒有基礎寶可夢！（第 ${mulliganCount} 次重抽）`);
-    await showMulliganConfirmModal(drawnCards, owner, mulliganCount);
 
-    // 確認後把手牌全部洗回牌組
+    // 把手牌全部洗回牌組
     const handCards = getCardsInZone(handZoneId).filter((c) => c.owner === owner);
     handCards.forEach((card) => {
       card.isFaceUp = false;
@@ -1763,51 +1778,38 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
     prepareOpeningDeckOrder(owner);
   }
 
-  return true;
+  return { ok: true, mulliganCount };
 }
 
-function showMulliganConfirmModal(handCards, owner, mulliganCount) {
+function showMulliganResultModal(ownerLabel, mulliganCount) {
   return new Promise((resolve) => {
-    const ownerLabel = owner === "player1" ? "我方" : "對手";
     const overlay = document.createElement("div");
     overlay.className = "mulligan-overlay";
     overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;";
 
     const panel = document.createElement("div");
-    panel.style.cssText = "background:#1a2234;border:2px solid #3a7bd5;border-radius:12px;padding:24px;max-width:820px;width:90%;text-align:center;";
+    panel.style.cssText = "background:#1a2234;border:2px solid #3a7bd5;border-radius:12px;padding:32px 48px;text-align:center;min-width:320px;";
+
+    const icon = document.createElement("div");
+    icon.style.cssText = "font-size:48px;margin-bottom:12px;";
+    icon.textContent = mulliganCount > 0 ? "🔄" : "✅";
 
     const title = document.createElement("div");
-    title.style.cssText = "color:#ff6b6b;font-size:20px;font-weight:bold;margin-bottom:8px;";
-    title.textContent = `${ownerLabel}手牌中沒有基礎寶可夢！`;
+    title.style.cssText = "color:#fff;font-size:22px;font-weight:bold;margin-bottom:12px;";
+    title.textContent = mulliganCount > 0
+      ? `${ownerLabel}重抽了 ${mulliganCount} 次`
+      : `${ownerLabel}起手成功`;
 
     const sub = document.createElement("div");
-    sub.style.cssText = "color:#aaa;font-size:14px;margin-bottom:16px;";
-    sub.textContent = `第 ${mulliganCount} 次重抽 — 點擊確認後將重新洗牌並抽取 7 張手牌`;
-
-    const cardArea = document.createElement("div");
-    cardArea.style.cssText = "display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:20px;";
-
-    handCards.forEach((card) => {
-      const wrapper = document.createElement("div");
-      wrapper.style.cssText = "width:90px;";
-      const img = document.createElement("img");
-      const refs = card.imageRefs || {};
-      img.src = refs.primary || refs.secondary || refs.activeUrl || getCardBackImageUrl();
-      img.alt = card.name || "Card";
-      img.style.cssText = "width:100%;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.5);";
-      img.onerror = () => { img.src = getCardBackImageUrl(); };
-      const label = document.createElement("div");
-      label.style.cssText = "color:#ccc;font-size:11px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-      label.textContent = card.name || "";
-      wrapper.appendChild(img);
-      wrapper.appendChild(label);
-      cardArea.appendChild(wrapper);
-    });
+    sub.style.cssText = "color:#aaa;font-size:14px;margin-bottom:20px;";
+    sub.textContent = mulliganCount > 0
+      ? `因手牌中沒有基礎寶可夢，重新洗牌抽取了 ${mulliganCount} 次後成功起手`
+      : "手牌中包含基礎寶可夢，已自動放置 6 張獎勵卡";
 
     const confirmBtn = document.createElement("button");
     confirmBtn.type = "button";
-    confirmBtn.textContent = "確認重抽";
-    confirmBtn.style.cssText = "background:#3a7bd5;color:#fff;border:none;border-radius:8px;padding:10px 32px;font-size:16px;cursor:pointer;font-weight:bold;";
+    confirmBtn.textContent = "確認";
+    confirmBtn.style.cssText = "background:#3a7bd5;color:#fff;border:none;border-radius:8px;padding:10px 40px;font-size:16px;cursor:pointer;font-weight:bold;";
     confirmBtn.addEventListener("click", () => {
       overlay.remove();
       resolve();
@@ -1825,9 +1827,9 @@ function showMulliganConfirmModal(handCards, owner, mulliganCount) {
       }
     });
 
+    panel.appendChild(icon);
     panel.appendChild(title);
     panel.appendChild(sub);
-    panel.appendChild(cardArea);
     panel.appendChild(confirmBtn);
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
@@ -1839,7 +1841,7 @@ async function runAutoSetupForOwner(owner = "player1", options = {}) {
   const syncOrder = prepareOpeningDeckOrder(owner, options.shuffleOrder || null);
   if (!syncOrder) {
     showToast("牌組為空，無法開始新對局。", "warn", 2200);
-    return false;
+    return { ok: false, mulliganCount: 0 };
   }
   return drawOpeningHandForOwner(owner, { setupPrize: false });
 }
@@ -6571,18 +6573,33 @@ async function triggerBattleStart({ broadcast = false, shuffleOrders = null } = 
         sendPeerAction({ type: ACTION_TYPES.READY_STATE, ready: false });
       }
       let doneCount = 0;
+      const results = {};
       for (const owner of owners) {
         if (!effectiveOrders[owner]) {
           continue;
         }
-        const ok = await drawOpeningHandForOwner(owner);
-        if (ok) {
+        const result = await drawOpeningHandForOwner(owner);
+        results[owner] = result;
+        if (result.ok) {
           doneCount += 1;
         }
       }
       if (doneCount === 0) {
         showToast("無可用牌組，無法開始對戰", "warn", 2200);
         return;
+      }
+      // 多人模式：廣播重抽次數給對手，並顯示對手的重抽結果
+      if (broadcast) {
+        const myMulligan = results.player1 ? results.player1.mulliganCount : 0;
+        sendPeerAction({ type: ACTION_TYPES.MULLIGAN_RESULT, mulliganCount: myMulligan });
+      }
+      // 顯示我方重抽結果
+      if (results.player1 && results.player1.ok) {
+        await showMulliganResultModal("我方", results.player1.mulliganCount);
+      }
+      // 顯示對手重抽結果
+      if (results.opponent && results.opponent.ok && results.opponent.mulliganCount > 0) {
+        await showMulliganResultModal("對手", results.opponent.mulliganCount);
       }
     } finally {
       runtime.autoSetupRunning = false;
@@ -6776,11 +6793,14 @@ async function startAutoSetupSequence() {
       preserveImageCaches: false,
       pruneImageCaches: true
     });
+    // 單人模式：雙方同時重抽，完成後依序顯示重抽次數
     const owners = ["player1", "opponent"];
+    const results = {};
     let doneCount = 0;
     for (const owner of owners) {
-      const ok = await runAutoSetupForOwner(owner);
-      if (ok) {
+      const result = await runAutoSetupForOwner(owner);
+      results[owner] = result;
+      if (result.ok) {
         doneCount += 1;
       }
     }
@@ -6789,7 +6809,14 @@ async function startAutoSetupSequence() {
     if (doneCount > 0) {
       runtime.singleRematchUnlocked = true;
       updateReadyUi();
-      showToast("雙方自動開局完成", "success", 1800);
+      // 先顯示我方重抽結果
+      if (results.player1 && results.player1.ok) {
+        await showMulliganResultModal("我方", results.player1.mulliganCount);
+      }
+      // 再顯示對手重抽結果
+      if (results.opponent && results.opponent.ok) {
+        await showMulliganResultModal("對手", results.opponent.mulliganCount);
+      }
     } else {
       showToast("無可用牌組，未執行自動開局", "warn", 2200);
     }
@@ -7426,6 +7453,11 @@ async function onPeerData(data) {
       applyRemoteChatMessage(data);
     } else if (data.type === ACTION_TYPES.COIN_TOSS) {
       applyRemoteCoinToss(data);
+    } else if (data.type === ACTION_TYPES.MULLIGAN_RESULT) {
+      const count = Number(data.mulliganCount) || 0;
+      if (count > 0) {
+        await showMulliganResultModal("對手", count);
+      }
     } else if (data.type === ACTION_TYPES.INIT_STATE) {
       applyRemoteInitState(data);
     } else if (data.type === ACTION_TYPES.SYNC_DECK) {
