@@ -3917,7 +3917,12 @@ body.pwa-mode {
   75% { transform: rotate(0deg); }
 }
 
-/* 旋轉提示由 JavaScript 控制 display */
+/* 手機直向：顯示旋轉提示 */
+@media screen and (max-width: 900px) and (orientation: portrait) {
+  body.pwa-mode #rotate-prompt {
+    display: flex !important;
+  }
+}
 
 /* 手機橫向：自動縮放遊戲畫面 */
 @media screen and (max-height: 500px),
