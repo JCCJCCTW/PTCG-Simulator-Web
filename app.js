@@ -377,24 +377,38 @@ if (runtime.isElectron && typeof window.require === "function") {
 if (!runtime.isElectron) {
   document.body.classList.add("pwa-mode");
 
-  // 手機版自動縮放：以 1600x960 為基準，根據螢幕大小計算 zoom
-  function applyMobileZoom() {
+  // 手機版：旋轉提示 + 自動縮放
+  const rotatePrompt = document.getElementById("rotate-prompt");
+
+  function checkOrientation() {
     const vw = window.innerWidth || document.documentElement.clientWidth || 0;
     const vh = window.innerHeight || document.documentElement.clientHeight || 0;
-    if (vw < 1200 || vh < 600) {
+    const isPortrait = vh > vw;
+    const isMobile = Math.min(vw, vh) < 600;
+
+    // 直向 + 手機螢幕 → 顯示旋轉提示
+    if (rotatePrompt) {
+      rotatePrompt.style.display = (isPortrait && isMobile) ? "flex" : "none";
+    }
+
+    // 橫向時自動縮放
+    if (!isPortrait && (vw < 1200 || vh < 600)) {
       const scaleW = vw / 1600;
       const scaleH = vh / 960;
       const scale = Math.min(scaleW, scaleH, 1);
       document.body.style.zoom = scale;
-    } else {
+    } else if (!isPortrait) {
       document.body.style.zoom = "";
     }
   }
-  window.addEventListener("resize", applyMobileZoom);
+
+  window.addEventListener("resize", checkOrientation);
   window.addEventListener("orientationchange", () => {
-    setTimeout(applyMobileZoom, 300);
+    setTimeout(checkOrientation, 300);
   });
-  applyMobileZoom();
+  // 初始檢查延遲一下確保 Safari 回報正確的 viewport
+  setTimeout(checkOrientation, 100);
+  checkOrientation();
 }
 
 if (runtime.ipcRenderer) {
