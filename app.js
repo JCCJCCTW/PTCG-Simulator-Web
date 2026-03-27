@@ -1320,6 +1320,7 @@ function sanitizeDeckEntriesForSync(entries) {
       elementType: entry.elementType || inferElementTypeByText(entry.name || "")
     };
     if (entry.cardId) synced.cardId = Number(entry.cardId) || 0;
+    if (entry.evolutionStage) synced.evolutionStage = String(entry.evolutionStage).trim();
     return synced;
   });
 }
@@ -1731,6 +1732,7 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
   }
 
   let mulliganCount = 0;
+  const MAX_MULLIGAN = 50;
   while (true) {
     renderBoard();
     triggerShuffleAnimation(deckZoneId);
@@ -1767,6 +1769,19 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
     // 沒有基礎寶可夢 → 靜默重抽（不彈視窗）
     mulliganCount += 1;
     appendGameLog(`${ownerLabel}手牌中沒有基礎寶可夢！（第 ${mulliganCount} 次重抽）`);
+
+    // 安全上限：防止無限重抽（牌組可能完全沒有基礎寶可夢）
+    if (mulliganCount >= MAX_MULLIGAN) {
+      appendGameLog(`${ownerLabel}已達重抽上限 (${MAX_MULLIGAN} 次)，強制起手`);
+      const prizeZoneId = getOwnerPrizeZone(owner);
+      for (let i = 0; i < 6; i += 1) {
+        const top = drawCardFromDeck(owner, false);
+        if (!top) break;
+        await animateMoveSingleCard(top, prizeZoneId, { faceDown: true, delayMs: 150 });
+      }
+      appendGameLog(`${ownerLabel}放置 6 張獎勵卡`);
+      break;
+    }
 
     // 把手牌全部洗回牌組
     const handCards = getCardsInZone(handZoneId).filter((c) => c.owner === owner);
@@ -5516,21 +5531,25 @@ async function syncRemoteDeckImport(owner, rawText, fallbackEntries = null) {
       if (runtime.remoteImportTokenByOwner[owner] !== token) {
         return false;
       }
-      // 將 fallbackEntries 中的 cardId 補充到解析結果（按 series+number 匹配）
+      // 將 fallbackEntries 中的 cardId / evolutionStage 補充到解析結果（按 series+number 匹配）
       if (Array.isArray(fallbackEntries) && fallbackEntries.length > 0) {
-        const cidMap = new Map();
+        const enrichMap = new Map();
         fallbackEntries.forEach((fe) => {
-          if (fe.cardId) {
-            const k = `${normalizeSeries(fe.series || "")}|${normalizeCardNumber(fe.number || "")}`.toLowerCase();
-            if (!cidMap.has(k)) cidMap.set(k, Number(fe.cardId) || 0);
+          const k = `${normalizeSeries(fe.series || "")}|${normalizeCardNumber(fe.number || "")}`.toLowerCase();
+          if (!enrichMap.has(k)) {
+            enrichMap.set(k, {
+              cardId: fe.cardId ? Number(fe.cardId) || 0 : 0,
+              evolutionStage: fe.evolutionStage ? String(fe.evolutionStage).trim() : ""
+            });
           }
         });
-        if (cidMap.size > 0) {
+        if (enrichMap.size > 0) {
           parsedEntries.forEach((pe) => {
-            if (!pe.cardId) {
-              const k = `${normalizeSeries(pe.series || "")}|${normalizeCardNumber(pe.number || "")}`.toLowerCase();
-              const cid = cidMap.get(k);
-              if (cid) pe.cardId = cid;
+            const k = `${normalizeSeries(pe.series || "")}|${normalizeCardNumber(pe.number || "")}`.toLowerCase();
+            const info = enrichMap.get(k);
+            if (info) {
+              if (!pe.cardId && info.cardId) pe.cardId = info.cardId;
+              if (!pe.evolutionStage && info.evolutionStage) pe.evolutionStage = info.evolutionStage;
             }
           });
         }
