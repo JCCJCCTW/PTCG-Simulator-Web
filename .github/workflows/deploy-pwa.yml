@@ -30,6 +30,7 @@ jobs:
           cp -r assets _site/
           cp -r wallpapers _site/
           cp -r deck-builder-data _site/
+          cp -r vendor _site/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
