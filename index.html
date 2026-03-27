@@ -1,0 +1,484 @@
+﻿<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="PTCG" />
+  <meta name="theme-color" content="#1e3a5f" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./assets/app-icon.png" />
+  <title>PTCG 寶可夢卡牌模擬器</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="top-left-controls">
+    <button id="deck-import-toggle-btn" class="import-toggle-btn" type="button">匯入卡表</button>
+    <button id="ready-toggle-btn" class="ready-toggle-btn" type="button">準備好了</button>
+    <button id="rematch-toggle-btn" class="ready-toggle-btn" type="button">再來一局</button>
+  </div>
+  <div class="top-right-controls">
+    <div class="chat-toggle-wrap">
+      <button id="chat-toggle-btn" class="import-toggle-btn hidden" type="button">聊天</button>
+      <span id="chat-unread-badge" class="chat-unread-badge hidden">N</span>
+    </div>
+    <button id="mode-select-btn" class="import-toggle-btn" type="button">模式選擇</button>
+    <button id="settings-btn" class="import-toggle-btn" type="button">設定</button>
+  </div>
+  <div id="resource-monitor" class="resource-monitor">
+    <div class="resource-title">資源監控</div>
+    <div class="resource-row">
+      <span>我方 牌組:<b id="resource-player1-deck">0</b></span>
+      <span>棄牌:<b id="resource-player1-discard">0</b></span>
+      <span>獎勵:<b id="resource-player1-prize">0</b></span>
+    </div>
+    <div class="resource-row">
+      <span>對手 牌組:<b id="resource-opponent-deck">0</b></span>
+      <span>棄牌:<b id="resource-opponent-discard">0</b></span>
+      <span>獎勵:<b id="resource-opponent-prize">0</b></span>
+    </div>
+  </div>
+
+  <section id="deck-import-panel" class="image-toolbar hidden">
+    <button id="deck-import-close-btn" class="deck-import-close-btn" type="button">X</button>
+    <div class="import-grid">
+      <div class="import-block">
+        <div class="import-title">我方卡表</div>
+        <textarea id="deck-import-input-player1" placeholder="貼上我方卡表"></textarea>
+        <button id="deck-import-btn-player1" type="button">匯入我方卡表</button>
+        <div id="player1-import-status" class="opponent-import-status status-placeholder" aria-hidden="true">&nbsp;</div>
+        <div class="import-progress-wrap">
+          <div class="image-progress-wrap import-progress-track">
+            <div id="image-progress-bar-player1" class="image-progress-bar"></div>
+          </div>
+          <span id="image-progress-text-player1">0%</span>
+        </div>
+      </div>
+      <div id="opponent-import-block" class="import-block">
+        <div id="opponent-import-title" class="import-title">對手卡表</div>
+        <textarea id="deck-import-input-opponent" placeholder="貼上對手卡表"></textarea>
+        <button id="deck-import-btn-opponent" type="button">匯入對手卡表</button>
+        <div id="opponent-import-status" class="opponent-import-status hidden">等待對手匯入</div>
+        <div class="import-progress-wrap">
+          <div class="image-progress-wrap import-progress-track">
+            <div id="image-progress-bar-opponent" class="image-progress-bar"></div>
+          </div>
+          <span id="image-progress-text-opponent">0%</span>
+        </div>
+      </div>
+    </div>
+    <div class="image-toolbar-actions">
+      <button id="save-deck-named-btn" class="hidden" type="button">命名並儲存</button>
+      <button id="auto-setup-btn" class="primary-action-btn" type="button">遊戲開始</button>
+    </div>
+    <div class="deck-library-panel">
+      <div class="import-title">我的牌組</div>
+      <div id="deck-library-list" class="deck-library-list"></div>
+    </div>
+  </section>
+
+  <main class="board" id="board-root">
+    <section class="zone field-area opponent-area" id="opponent-area">
+        <header class="zone-title">對手場地</header>
+        <div class="field-grid mirrored-layout">
+          <aside class="field-side" id="opponent-left-side">
+            <div class="zone-slot stack" id="opponent-discard" data-zone-label="對手棄牌區"></div>
+            <div class="deck-side-group">
+              <div class="zone-slot stack deck-zone" id="opponent-deck" data-zone-label="對手牌組區"></div>
+              <div class="zone-slot deck-bottom-zone" id="opponent-deck-bottom" data-zone-label="放到牌底"></div>
+            </div>
+          </aside>
+
+        <section class="field-center" id="opponent-center">
+          <div class="zone-slot hand hand-row" id="opponent-hand" data-zone-label="對手手牌區"></div>
+
+          <div class="bench-row mirrored" id="opponent-bench-row">
+            <div class="zone-slot main-card" id="opponent-bench-1" data-zone-label="對手備戰 1"></div>
+            <div class="zone-slot attach" id="opponent-bench-1-attach" data-zone-label=""></div>
+            <div class="zone-slot main-card" id="opponent-bench-2" data-zone-label="對手備戰 2"></div>
+            <div class="zone-slot attach" id="opponent-bench-2-attach" data-zone-label=""></div>
+            <div class="zone-slot main-card" id="opponent-bench-3" data-zone-label="對手備戰 3"></div>
+            <div class="zone-slot attach" id="opponent-bench-3-attach" data-zone-label=""></div>
+            <div class="zone-slot main-card" id="opponent-bench-4" data-zone-label="對手備戰 4"></div>
+            <div class="zone-slot attach" id="opponent-bench-4-attach" data-zone-label=""></div>
+            <div class="zone-slot main-card" id="opponent-bench-5" data-zone-label="對手備戰 5"></div>
+            <div class="zone-slot attach" id="opponent-bench-5-attach" data-zone-label=""></div>
+          </div>
+
+          <div class="combat-row opponent-combat-row">
+            <div class="zone-slot side-aux" id="opponent-reveal" data-zone-label="對手展示區"></div>
+            <div class="zone-pair active-pair">
+              <div class="zone-slot main-card active" id="opponent-active" data-zone-label="對手戰鬥區"></div>
+              <div class="zone-slot attach" id="opponent-active-attach" data-zone-label=""></div>
+            </div>
+            <div class="zone-slot side-aux" id="opponent-temp-hand" data-zone-label="對手暫時手牌區"></div>
+          </div>
+        </section>
+
+        <aside class="field-side" id="opponent-right-side">
+          <div class="zone-slot prize-zone" id="opponent-prize" data-zone-label="對手獎勵卡"></div>
+        </aside>
+      </div>
+    </section>
+
+    <div class="zone-slot stack stadium-zone floating-stadium" id="stadium" data-zone-label="場地區"></div>
+    <div class="stadium-side-controls">
+      <button id="hand-visibility-toggle-btn" class="great-void-toggle hidden" type="button">查看手牌</button>
+      <button id="great-void-toggle-btn" class="great-void-toggle" type="button">大空洞</button>
+    </div>
+    <div id="coin-toss-control" class="coin-toss-control" aria-live="polite">
+      <button id="coin-toss-btn" class="coin-toss-btn" type="button" aria-label="擲硬幣">
+        <span id="coin-toss-disc" class="coin-toss-disc">
+          <span id="coin-toss-symbol" class="coin-toss-symbol">正</span>
+        </span>
+      </button>
+    </div>
+
+    <section class="zone field-area player-area" id="player1-area">
+      <header class="zone-title">我方場地</header>
+      <div class="field-grid">
+        <aside class="field-side" id="player-left-side">
+          <div class="zone-slot prize-zone" id="player1-prize" data-zone-label="我方獎勵卡"></div>
+        </aside>
+
+        <section class="field-center" id="player-center">
+          <div class="combat-row">
+            <div class="zone-slot side-aux" id="player1-temp-hand" data-zone-label="暫時手牌區"></div>
+            <div class="zone-pair active-pair">
+              <div class="zone-slot main-card active" id="player1-active" data-zone-label="戰鬥區"></div>
+              <div class="zone-slot attach" id="player1-active-attach" data-zone-label=""></div>
+            </div>
+            <div class="zone-slot side-aux" id="player1-reveal" data-zone-label="展示區"></div>
+          </div>
+
+          <div class="bench-row" id="player1-bench-row">
+            <div class="zone-slot main-card" id="player1-bench-1" data-zone-label="備戰 1"></div>
+            <div class="zone-slot attach" id="player1-bench-1-attach" data-zone-label=""></div>
+            <div class="zone-slot main-card" id="player1-bench-2" data-zone-label="備戰 2"></div>
+            <div class="zone-slot attach" id="player1-bench-2-attach" data-zone-label=""></div>
+            <div class="zone-slot main-card" id="player1-bench-3" data-zone-label="備戰 3"></div>
+            <div class="zone-slot attach" id="player1-bench-3-attach" data-zone-label=""></div>
+            <div class="zone-slot main-card" id="player1-bench-4" data-zone-label="備戰 4"></div>
+            <div class="zone-slot attach" id="player1-bench-4-attach" data-zone-label=""></div>
+            <div class="zone-slot main-card" id="player1-bench-5" data-zone-label="備戰 5"></div>
+            <div class="zone-slot attach" id="player1-bench-5-attach" data-zone-label=""></div>
+          </div>
+
+          <div class="zone-slot hand hand-row" id="player1-hand" data-zone-label="手牌區"></div>
+        </section>
+
+        <aside class="field-side" id="player-right-side">
+          <div class="deck-side-group bottom-left">
+            <div class="zone-slot deck-bottom-zone" id="player1-deck-bottom" data-zone-label="放到牌底"></div>
+            <div class="zone-slot stack deck-zone" id="player1-deck" data-zone-label="牌組區"></div>
+          </div>
+          <div class="zone-slot stack" id="player1-discard" data-zone-label="棄牌區"></div>
+        </aside>
+      </div>
+    </section>
+
+    <div id="deck-context-menu" class="context-menu hidden">
+      <button data-action="draw">抽牌</button>
+      <button data-action="shuffle">洗牌</button>
+      <button data-action="view-library">看牌庫</button>
+      <button data-action="to-temp">抽一張到暫時手牌區</button>
+      <button data-action="to-reveal">抽一張到展示區</button>
+      <button data-action="to-prize">抽一張獎勵卡</button>
+      <button data-action="setup-prize-six">放置六張獎勵</button>
+    </div>
+
+
+    <div id="status-context-menu" class="context-menu hidden">
+      <div class="status-menu-row damage-controls">
+        <button data-action="damage-plus-10">+10</button>
+        <button data-action="damage-minus-10">-10</button>
+        <button data-action="damage-plus-100">+100</button>
+        <button data-action="damage-minus-100">-100</button>
+      </div>
+      <div class="status-menu-row status-menu-note">可使用滑鼠滾輪增減傷害</div>
+      <div class="status-menu-row">
+        <button data-action="quick-discard">一鍵棄置</button>
+      </div>
+      <div class="status-menu-row status-controls">
+        <button data-action="poison">中毒</button>
+        <button data-action="burn">燒傷</button>
+        <button data-action="confused">混亂</button>
+        <button data-action="paralyzed">麻痺</button>
+        <button data-action="asleep">睡眠</button>
+        <button data-action="recover">恢復</button>
+      </div>
+    </div>
+    <section id="overlay-root" class="overlay hidden" aria-hidden="true">
+      <div class="overlay-panel">
+        <header class="overlay-header">
+          <h3 id="overlay-title">視窗</h3>
+          <button id="overlay-close" class="overlay-close" type="button">X</button>
+        </header>
+        <div id="overlay-hint" class="overlay-hint hidden"></div>
+        <div id="overlay-zone" class="overlay-zone" data-zone-id=""></div>
+      </div>
+    </section>
+  </main>
+
+  <section id="card-zoom" class="card-zoom hidden" aria-hidden="true">
+    <img id="card-zoom-image" alt="Card Zoom" />
+  </section>
+
+  <section id="mode-gate" class="mode-gate" aria-hidden="false">
+    <div id="mode-gate-panel" class="mode-gate-panel">
+      <button id="peer-fetch-id-btn" class="mode-gate-fetch-btn" type="button">取得連線ID</button>
+      <h2>選擇模式</h2>
+      <div class="mode-peer-meta">
+        <div>我的 ID：<span id="peer-id-text">未取得</span></div>
+        <div class="conn-row">連線狀態：<span id="peer-conn-light" class="conn-light off"></span><span id="peer-conn-text">未連線</span></div>
+      </div>
+      <div class="manual-connect-row">
+        <input id="peer-connect-input" type="text" placeholder="輸入對方 ID" />
+        <button id="peer-connect-btn" type="button">連線</button>
+      </div>
+      <div class="mode-gate-actions">
+        <button id="mode-single-btn" type="button">單人測牌</button>
+        <button id="mode-multi-btn" type="button">多人連線</button>
+        <button id="deck-builder-toggle-btn" type="button">牌組編輯器</button>
+        <button id="peer-copy-link-btn" type="button">複製我的ID</button>
+        <button id="mode-gate-settings-btn" type="button">設定</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="p2p-hud" class="p2p-hud hidden">
+    <div>我的 ID：<span id="peer-id-text-hud">未取得</span></div>
+    <div class="conn-row">狀態：<span id="peer-conn-light-hud" class="conn-light off"></span><span id="peer-conn-text-hud">未連線</span></div>
+  </section>
+
+  <div id="battle-start-banner" class="battle-start-banner hidden" aria-hidden="true">對戰開始</div>
+  <div id="winner-banner" class="winner-banner hidden" aria-hidden="true">WINNER!</div>
+
+  <section id="deck-save-modal" class="deck-save-modal hidden" aria-hidden="true">
+    <div class="overlay-panel deck-save-modal-panel">
+      <header class="overlay-header">
+        <h3>命名並儲存</h3>
+        <button id="deck-save-modal-close" class="overlay-close" type="button">X</button>
+      </header>
+      <div style="padding:12px; display:grid; gap:8px;">
+        <input id="deck-save-name-input" type="text" placeholder="請輸入牌組名稱" />
+        <button id="deck-save-confirm-btn" type="button">儲存</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="deck-rename-modal" class="deck-save-modal hidden" aria-hidden="true">
+    <div class="overlay-panel deck-save-modal-panel">
+      <header class="overlay-header">
+        <h3>重新命名牌組</h3>
+        <button id="deck-rename-modal-close" class="overlay-close" type="button">X</button>
+      </header>
+      <div style="padding:12px; display:grid; gap:8px;">
+        <input id="deck-rename-name-input" type="text" placeholder="請輸入新的牌組名稱" />
+        <button id="deck-rename-confirm-btn" type="button">更新名稱</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="reset-confirm-modal" class="deck-save-modal hidden" aria-hidden="true">
+    <div class="overlay-panel deck-save-modal-panel">
+      <header class="overlay-header">
+        <h3>重新開始</h3>
+      </header>
+      <div class="reset-confirm-body">
+        <div>是否清除當前局面並重新開始？</div>
+        <div class="reset-confirm-actions">
+          <button id="reset-confirm-yes" type="button">是</button>
+          <button id="reset-confirm-no" type="button">否</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="settings-modal" class="deck-save-modal hidden" aria-hidden="true">
+    <div class="overlay-panel deck-save-modal-panel">
+      <header class="overlay-header">
+        <h3>設定</h3>
+        <button id="settings-modal-close" class="overlay-close" type="button">X</button>
+      </header>
+      <div class="settings-modal-body">
+        <div class="settings-section">
+          <div class="settings-label">背景圖</div>
+          <div class="settings-preview-wrap">
+            <img id="background-image-preview" class="settings-preview-image" alt="背景預覽" />
+          </div>
+          <input id="background-image-input" type="file" accept="image/*" />
+          <div class="settings-actions">
+            <button id="background-image-apply-btn" type="button">匯入並套用背景</button>
+            <button id="background-image-reset-btn" type="button">還原預設背景</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">背景強度</div>
+          <input id="background-strength-input" type="range" min="0" max="100" step="1" />
+          <div id="background-strength-text" class="settings-hint">100%</div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">畫面解析度</div>
+          <div class="settings-resolution-row">
+            <select id="resolution-select" class="custom-select resolution-select">
+              <option value="1280x768">1280 × 768（小）</option>
+              <option value="1440x864">1440 × 864（中）</option>
+              <option value="1600x960" selected>1600 × 960（預設）</option>
+              <option value="1920x1152">1920 × 1152（大）</option>
+              <option value="2560x1536">2560 × 1536（超大）</option>
+              <option value="fullscreen">全螢幕</option>
+            </select>
+            <button id="resolution-apply-btn" type="button">套用</button>
+          </div>
+          <div id="resolution-hint" class="settings-hint">目前：1600 × 960</div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">卡片圖片資料夾</div>
+          <div id="deck-image-root-display" class="settings-hint" style="word-break:break-all;max-width:360px;">（使用內建路徑）</div>
+          <div class="settings-actions">
+            <button id="deck-image-root-browse-btn" type="button">瀏覽資料夾...</button>
+            <button id="deck-image-root-clear-btn" type="button">清除（使用內建）</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="chat-modal" class="deck-save-modal hidden" aria-hidden="true">
+    <div class="overlay-panel deck-save-modal-panel chat-modal-panel">
+      <header class="overlay-header">
+        <h3>聊天</h3>
+        <button id="chat-modal-close" class="overlay-close" type="button">X</button>
+      </header>
+      <div class="chat-modal-body">
+        <div id="chat-message-list" class="chat-message-list"></div>
+        <div class="chat-input-row">
+          <textarea id="chat-input" rows="2" placeholder="輸入訊息..."></textarea>
+          <button id="chat-send-btn" type="button">送出</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="deck-builder-modal" class="deck-save-modal hidden" aria-hidden="true">
+    <div class="deck-builder-modal-panel">
+      <header class="overlay-header">
+        <h3>牌組編輯器</h3>
+        <button id="deck-builder-close-btn" class="overlay-close" type="button">X</button>
+      </header>
+      <div class="deck-builder-modal-body">
+        <section class="deck-builder-catalog-panel">
+          <div class="deck-builder-toolbar">
+            <div class="deck-builder-search-wrap">
+              <input id="deck-builder-search-input" type="text" placeholder="搜尋卡片名稱" />
+              <button id="deck-builder-search-clear-btn" type="button" aria-label="清除搜尋">清除</button>
+            </div>
+            <select id="deck-builder-series-filter">
+              <option value="">全部系列</option>
+            </select>
+            <select id="deck-builder-type-filter">
+              <option value="">全部類型</option>
+            </select>
+          </div>
+          <div class="deck-builder-status-row">
+            <div id="deck-builder-load-status" class="deck-builder-load-status">尚未載入卡片資料</div>
+            <div class="deck-builder-filter-actions">
+              <select id="deck-builder-subtype-filter">
+                <option value="">全部子類型</option>
+              </select>
+              <select id="deck-builder-attribute-filter">
+                <option value="">全部屬性</option>
+              </select>
+              <button id="deck-builder-advanced-filter-btn" type="button">進階篩選</button>
+              <button id="deck-builder-reset-filters-btn" type="button">清除篩選</button>
+              <div id="deck-builder-advanced-filter-popover" class="deck-builder-advanced-filter-popover hidden">
+                <section class="deck-builder-advanced-filter-section">
+                  <div class="deck-builder-advanced-filter-title">進化階段</div>
+                  <div id="deck-builder-evolution-filter-list" class="deck-builder-checkbox-list"></div>
+                </section>
+                <section class="deck-builder-advanced-filter-section">
+                  <div class="deck-builder-advanced-filter-title">撤退</div>
+                  <div id="deck-builder-retreat-filter-list" class="deck-builder-checkbox-list"></div>
+                </section>
+                <section class="deck-builder-advanced-filter-section">
+                  <div class="deck-builder-advanced-filter-title">特性</div>
+                  <div id="deck-builder-abilities-filter-list" class="deck-builder-checkbox-list"></div>
+                </section>
+              </div>
+            </div>
+          </div>
+          <div class="deck-builder-layout">
+            <div id="deck-builder-card-list" class="deck-builder-card-list"></div>
+            <aside id="deck-builder-card-detail" class="deck-builder-card-detail">
+              <div class="deck-builder-detail-empty">請先選擇一張卡片</div>
+            </aside>
+          </div>
+        </section>
+        <section class="deck-builder-deck-panel">
+          <div class="deck-builder-deck-header">
+            <input id="deck-builder-name-input" type="text" placeholder="牌組名稱" />
+            <div class="deck-builder-deck-actions">
+              <button id="deck-builder-import-btn" type="button">匯入卡表</button>
+              <button id="deck-builder-export-file-btn" type="button">匯出檔案</button>
+              <button id="deck-builder-save-btn" type="button">儲存牌組</button>
+            </div>
+          </div>
+          <div class="deck-builder-saved-row">
+            <select id="deck-builder-saved-select">
+              <option value="">選擇已存牌組</option>
+            </select>
+            <button id="deck-builder-load-saved-btn" type="button">載入卡表</button>
+            <button id="deck-builder-clear-btn" type="button">清空牌組</button>
+          </div>
+          <div id="deck-builder-summary" class="deck-builder-summary"></div>
+          <div id="deck-builder-deck-list" class="deck-builder-deck-list"></div>
+          <div id="deck-builder-warning" class="deck-builder-warning hidden"></div>
+        </section>
+      </div>
+      <section id="deck-builder-import-modal" class="deck-builder-import-modal hidden" aria-hidden="true">
+        <div class="deck-builder-import-panel">
+          <header class="overlay-header">
+            <h3>匯入卡表</h3>
+            <button id="deck-builder-import-close-btn" class="overlay-close" type="button">X</button>
+          </header>
+          <div class="deck-builder-import-body">
+            <textarea
+              id="deck-builder-import-input"
+              rows="6"
+              placeholder="請貼上 ptcgtw.shop 卡表網址或卡表內容"
+            ></textarea>
+            <div id="deck-builder-import-status" class="deck-builder-import-status">尚未開始匯入</div>
+            <div class="deck-builder-import-progress">
+              <div class="deck-builder-import-progress-track">
+                <div id="deck-builder-import-progress-bar" class="deck-builder-import-progress-bar"></div>
+              </div>
+              <div id="deck-builder-import-progress-text" class="deck-builder-import-progress-text">0%</div>
+            </div>
+            <div class="deck-builder-import-actions">
+              <button id="deck-builder-import-start-btn" type="button">開始匯入</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <section id="deck-builder-image-preview-modal" class="deck-save-modal hidden" aria-hidden="true">
+    <div class="overlay-panel deck-builder-image-preview-panel">
+      <img id="deck-builder-image-preview" class="deck-builder-image-preview" alt="卡圖預覽" />
+    </div>
+  </section>
+
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="./app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator && !window.process) {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    }
+  </script>
+</body>
+</html>
+
