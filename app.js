@@ -6593,11 +6593,11 @@ async function triggerBattleStart({ broadcast = false, shuffleOrders = null } = 
         const myMulligan = results.player1 ? results.player1.mulliganCount : 0;
         sendPeerAction({ type: ACTION_TYPES.MULLIGAN_RESULT, mulliganCount: myMulligan });
       }
-      // 顯示我方重抽結果
-      if (results.player1 && results.player1.ok) {
+      // 顯示我方重抽結果（有重抽才顯示）
+      if (results.player1 && results.player1.ok && results.player1.mulliganCount > 0) {
         await showMulliganResultModal("我方", results.player1.mulliganCount);
       }
-      // 顯示對手重抽結果
+      // 顯示對手重抽結果（有重抽才顯示）
       if (results.opponent && results.opponent.ok && results.opponent.mulliganCount > 0) {
         await showMulliganResultModal("對手", results.opponent.mulliganCount);
       }
@@ -6660,16 +6660,30 @@ async function triggerRematchStart({ broadcast = false } = {}) {
       });
     }
     let doneCount = 0;
+    const results = {};
     for (const owner of owners) {
       if (!effectiveOrders[owner]) {
         continue;
       }
-      const ok = await drawOpeningHandForOwner(owner);
-      if (ok) {
+      const result = await drawOpeningHandForOwner(owner);
+      results[owner] = result;
+      if (result.ok) {
         doneCount += 1;
       }
     }
     if (doneCount > 0) {
+      // 廣播重抽次數給對手
+      if (broadcast && results.player1) {
+        sendPeerAction({ type: ACTION_TYPES.MULLIGAN_RESULT, mulliganCount: results.player1.mulliganCount });
+      }
+      // 顯示我方重抽結果（有重抽才顯示）
+      if (results.player1 && results.player1.ok && results.player1.mulliganCount > 0) {
+        await showMulliganResultModal("我方", results.player1.mulliganCount);
+      }
+      // 顯示對手重抽結果（有重抽才顯示）
+      if (results.opponent && results.opponent.ok && results.opponent.mulliganCount > 0) {
+        await showMulliganResultModal("對手", results.opponent.mulliganCount);
+      }
       showBattleStartBanner("再來一局");
       clearRematchStateAndUi();
       clearReadyStateAndUi();
@@ -6809,12 +6823,12 @@ async function startAutoSetupSequence() {
     if (doneCount > 0) {
       runtime.singleRematchUnlocked = true;
       updateReadyUi();
-      // 先顯示我方重抽結果
-      if (results.player1 && results.player1.ok) {
+      // 先顯示我方重抽結果（有重抽才顯示）
+      if (results.player1 && results.player1.ok && results.player1.mulliganCount > 0) {
         await showMulliganResultModal("我方", results.player1.mulliganCount);
       }
-      // 再顯示對手重抽結果
-      if (results.opponent && results.opponent.ok) {
+      // 再顯示對手重抽結果（有重抽才顯示）
+      if (results.opponent && results.opponent.ok && results.opponent.mulliganCount > 0) {
         await showMulliganResultModal("對手", results.opponent.mulliganCount);
       }
     } else {
