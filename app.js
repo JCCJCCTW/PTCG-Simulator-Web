@@ -376,25 +376,6 @@ if (runtime.isElectron && typeof window.require === "function") {
 // PWA / 瀏覽器模式標記
 if (!runtime.isElectron) {
   document.body.classList.add("pwa-mode");
-
-  // 手機版自動縮放：以 1600x960 為基準，根據螢幕大小計算 zoom
-  function applyMobileZoom() {
-    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
-    if (vw < 1200 || vh < 600) {
-      const scaleW = vw / 1600;
-      const scaleH = vh / 960;
-      const scale = Math.min(scaleW, scaleH, 1);
-      document.body.style.zoom = scale;
-    } else {
-      document.body.style.zoom = "";
-    }
-  }
-  window.addEventListener("resize", applyMobileZoom);
-  window.addEventListener("orientationchange", () => {
-    setTimeout(applyMobileZoom, 300);
-  });
-  applyMobileZoom();
 }
 
 if (runtime.ipcRenderer) {
