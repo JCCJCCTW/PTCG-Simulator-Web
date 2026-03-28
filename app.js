@@ -4520,7 +4520,7 @@ function renderDeckBuilderCardList() {
     thumb.className = "deck-builder-thumb";
     thumb.src = card.imageUrl || getCardBackImageUrl();
     thumb.alt = card.name;
-    thumb.loading = "eager";
+    thumb.loading = "lazy";
     thumb.decoding = "async";
 
     const main = document.createElement("div");
@@ -4653,7 +4653,7 @@ function renderDeckBuilderDeckList() {
       thumb.className = "deck-builder-deck-card-image";
       thumb.src = imgSrc;
       thumb.alt = card.name;
-      thumb.loading = "lazy";
+      thumb.loading = "eager";
       thumb.decoding = "async";
     }
     shell.appendChild(thumb);
@@ -4669,9 +4669,9 @@ function renderDeckBuilderDeckList() {
 function renderDeckBuilderState() {
   renderDeckBuilderSavedOptions();
   renderDeckBuilderFilters();
+  renderDeckBuilderDeckList();
   renderDeckBuilderCardList();
   renderDeckBuilderCardDetail();
-  renderDeckBuilderDeckList();
   updateDeckBuilderWindowTitle();
 }
 
