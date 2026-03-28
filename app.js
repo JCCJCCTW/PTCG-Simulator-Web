@@ -137,7 +137,10 @@ const ACTION_TYPES = {
   TOGGLE_HAND_VISIBILITY: "TOGGLE_HAND_VISIBILITY",
   CHAT_MESSAGE: "CHAT_MESSAGE",
   COIN_TOSS: "COIN_TOSS",
-  MULLIGAN_RESULT: "MULLIGAN_RESULT"
+  MULLIGAN_RESULT: "MULLIGAN_RESULT",
+  USE_ATTACK: "USE_ATTACK",
+  END_TURN: "END_TURN",
+  SETUP_DONE: "SETUP_DONE"
 };
 const CUSTOM_BG_STORAGE_KEY = "ptcg.customBackgroundImage";
 const CUSTOM_BG_STRENGTH_KEY = "ptcg.customBackgroundStrength";
@@ -255,6 +258,20 @@ const state = {
   prizeCountSnapshot: {
     player1: null,
     opponent: null
+  },
+  turn: {
+    active: false,
+    currentOwner: "",
+    turnNumber: 0,
+    hasAttackedThisTurn: false,
+    betweenTurns: false
+  },
+  setupPhase: {
+    active: false,
+    player1Ready: false,
+    opponentReady: false,
+    player1MulliganCount: 0,
+    opponentMulliganCount: 0
   },
   greatVoid: {
     player1: false,
@@ -1731,8 +1748,25 @@ function prepareOpeningDeckOrder(owner, syncOrder = null) {
   return shuffled;
 }
 
+// 檢查牌組中所有卡片是否都存在於 cards.json 資料庫
+function validateDeckAgainstCatalog(owner) {
+  const entries = state.importedDeckEntries[owner];
+  if (!Array.isArray(entries) || entries.length === 0) return { valid: false, missing: [] };
+  if (!runtime.deckBuilderCatalogReady) return { valid: false, missing: [] };
+  const missing = [];
+  for (const entry of entries) {
+    const catalogCard = findDeckBuilderCatalogCardForEntry(entry);
+    if (!catalogCard) {
+      missing.push(`${entry.name} (${entry.series} ${entry.number})`);
+    }
+  }
+  return { valid: missing.length === 0, missing };
+}
+
 async function drawOpeningHandForOwner(owner = "player1", options = {}) {
   const { setupPrize = false } = options;
+  // 確保 catalog 已載入，供 resolveEvolutionStageForEntry 查詢
+  try { await ensureDeckBuilderCatalogLoaded(); } catch { /* ignore */ }
   const deckZoneId = getOwnerDeckZone(owner);
   const handZoneId = getOwnerHandZone(owner);
   const ownerLabel = owner === "player1" ? "我方" : "對手";
@@ -1740,6 +1774,26 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
   if (deckCards.length === 0) {
     showToast("牌組為空，無法開始新對局。", "warn", 2200);
     return { ok: false, mulliganCount: 0 };
+  }
+
+  // 檢查牌組是否全部存在於資料庫中
+  const validation = validateDeckAgainstCatalog(owner);
+  const catalogComplete = validation.valid;
+
+  // 不在資料庫中 → 僅抽 7 張手牌，不判斷重抽、不放獎勵卡
+  if (!catalogComplete) {
+    renderBoard();
+    triggerShuffleAnimation(deckZoneId);
+    appendGameLog(`${ownerLabel}牌組已洗牌`);
+    await delayMs(150);
+    for (let i = 0; i < 7; i += 1) {
+      const top = drawCardFromDeck(owner, false);
+      if (!top) break;
+      await animateMoveSingleCard(top, handZoneId, { faceUp: true, delayMs: 150 });
+    }
+    appendGameLog(`${ownerLabel}抽取 7 張手牌（牌組含資料庫外卡片，跳過重抽與獎勵卡判定）`);
+    showToast(`${ownerLabel}牌組含資料庫外卡片，跳過重抽判斷`, "warn", 2500);
+    return { ok: true, mulliganCount: 0 };
   }
 
   let mulliganCount = 0;
@@ -1759,21 +1813,24 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
     }
     appendGameLog(`${ownerLabel}抽取 7 張手牌`);
 
-    // 檢查是否有基礎寶可夢（同時檢查 evolutionStage 和 cardType）
+    // 檢查是否有基礎寶可夢（從 catalog 查 evolution_stage）
     const hasBasic = drawnCards.some((card) => {
       const stage = card.evolutionStage || resolveEvolutionStageForEntry(card);
-      return stage === "基礎";
+      if (stage === "基礎") return true;
+      // fallback：直接查 catalog
+      if (!stage) {
+        const catalogCard = findDeckBuilderCatalogCardForEntry(card);
+        if (catalogCard) {
+          const catStage = String(catalogCard.evolutionStage || catalogCard.evolution_stage || "").trim();
+          if (catStage === "基礎") return true;
+        }
+      }
+      return false;
     });
 
     if (hasBasic) {
-      // 有基礎寶可夢 → 自動放置獎勵卡
-      const prizeZoneId = getOwnerPrizeZone(owner);
-      for (let i = 0; i < 6; i += 1) {
-        const top = drawCardFromDeck(owner, false);
-        if (!top) break;
-        await animateMoveSingleCard(top, prizeZoneId, { faceDown: true, delayMs: 150 });
-      }
-      appendGameLog(`${ownerLabel}放置 6 張獎勵卡`);
+      // 有基礎寶可夢 → 進入設置階段（獎勵卡由設置完成後統一放置）
+      appendGameLog(`${ownerLabel}起手成功，請放置基礎寶可夢`);
       break;
     }
 
@@ -1784,13 +1841,6 @@ async function drawOpeningHandForOwner(owner = "player1", options = {}) {
     // 安全上限：防止無限重抽（牌組可能完全沒有基礎寶可夢）
     if (mulliganCount >= MAX_MULLIGAN) {
       appendGameLog(`${ownerLabel}已達重抽上限 (${MAX_MULLIGAN} 次)，強制起手`);
-      const prizeZoneId = getOwnerPrizeZone(owner);
-      for (let i = 0; i < 6; i += 1) {
-        const top = drawCardFromDeck(owner, false);
-        if (!top) break;
-        await animateMoveSingleCard(top, prizeZoneId, { faceDown: true, delayMs: 150 });
-      }
-      appendGameLog(`${ownerLabel}放置 6 張獎勵卡`);
       break;
     }
 
@@ -6357,6 +6407,653 @@ function showBattleStartBanner(text = "對戰開始") {
   }, 1650);
 }
 
+// ═══════════════════════════════════════════════
+// 攻擊橫幅
+// ═══════════════════════════════════════════════
+function showAttackBanner(text) {
+  const banner = document.getElementById("attack-banner");
+  if (!banner) return;
+  banner.textContent = text;
+  banner.classList.remove("hidden", "showing");
+  void banner.offsetWidth;
+  banner.classList.add("showing");
+  banner.setAttribute("aria-hidden", "false");
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      banner.classList.remove("showing");
+      banner.classList.add("hidden");
+      banner.setAttribute("aria-hidden", "true");
+      resolve();
+    }, 1650);
+  });
+}
+
+// ═══════════════════════════════════════════════
+// 回合系統
+// ═══════════════════════════════════════════════
+function resolveAttacksForCard(card) {
+  if (!card) return [];
+  const catalogCard = findDeckBuilderCatalogCardForEntry(card);
+  if (catalogCard && Array.isArray(catalogCard.attacks)) return catalogCard.attacks;
+  return [];
+}
+
+function startTurnSystem(firstOwner) {
+  state.turn.active = true;
+  state.turn.currentOwner = firstOwner || "player1";
+  state.turn.turnNumber = 1;
+  state.turn.hasAttackedThisTurn = false;
+  state.turn.betweenTurns = false;
+  updateTurnIndicatorUi();
+}
+
+function stopTurnSystem() {
+  state.turn.active = false;
+  state.turn.currentOwner = "";
+  state.turn.turnNumber = 0;
+  state.turn.hasAttackedThisTurn = false;
+  state.turn.betweenTurns = false;
+  updateTurnIndicatorUi();
+}
+
+function updateTurnIndicatorUi() {
+  const indicator = document.getElementById("turn-indicator");
+  const textEl = document.getElementById("turn-indicator-text");
+  const endBtn = document.getElementById("end-turn-btn");
+  if (!indicator) return;
+  if (!state.turn.active || state.gamePhase !== "遊戲中") {
+    indicator.classList.add("hidden");
+    return;
+  }
+  indicator.classList.remove("hidden");
+  const isMyTurn = state.turn.currentOwner === "player1";
+  const turnLabel = isMyTurn ? "我方回合" : "對手回合";
+  textEl.textContent = `${turnLabel} (第 ${state.turn.turnNumber} 回合)`;
+  // 單人模式不半透明、按鈕始終可用；多人模式對手回合時置灰
+  indicator.classList.toggle("opponent-turn", !isMyTurn && !state.singlePlayer);
+  if (endBtn) {
+    endBtn.disabled = state.turn.betweenTurns || (!state.singlePlayer && !isMyTurn);
+  }
+}
+
+function ownerLabel(owner) {
+  return owner === "player1" ? "我方" : "對手";
+}
+
+async function endCurrentTurn({ broadcast = false } = {}) {
+  if (!state.turn.active || state.turn.betweenTurns) return;
+  const endingOwner = state.turn.currentOwner;
+
+  if (broadcast && state.peer.multiplayerEnabled) {
+    sendPeerAction({ type: ACTION_TYPES.END_TURN, owner: endingOwner });
+  }
+
+  // 麻痺在回合結束時自動解除
+  const endingActiveZone = endingOwner + "-active";
+  const endingActiveCards = getCardsInZone(endingActiveZone);
+  for (const c of endingActiveCards) {
+    if (c.behaviorStatus === "paralyzed") {
+      resetBattleState(c);
+      broadcastCardStats(c);
+    }
+  }
+
+  // 進入回合中間時點
+  state.turn.betweenTurns = true;
+  updateTurnIndicatorUi();
+  await resolveBetweenTurnEffects();
+
+  // 切換到下一位玩家
+  const nextOwner = endingOwner === "player1" ? "opponent" : "player1";
+  state.turn.currentOwner = nextOwner;
+  state.turn.turnNumber += 1;
+  state.turn.hasAttackedThisTurn = false;
+  state.turn.betweenTurns = false;
+  updateTurnIndicatorUi();
+
+  const nextLabel = nextOwner === "player1" ? "我方回合" : "對手回合";
+  showBattleStartBanner(nextLabel);
+
+  // 回合開始時自動抽一張牌
+  if (state.turn.active && state.gamePhase === "遊戲中") {
+    await delayMs(600);
+    const drawnCard = drawCardFromDeck(nextOwner, false);
+    if (drawnCard) {
+      const handZone = getOwnerHandZone(nextOwner);
+      await animateMoveSingleCard(drawnCard, handZone, { faceUp: true, delayMs: 200 });
+      appendGameLog(`${ownerLabel(nextOwner)}回合開始，抽取 1 張卡`);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 回合中間時點 — 狀態結算
+// ═══════════════════════════════════════════════
+async function resolveBetweenTurnEffects() {
+  const owners = [state.turn.currentOwner, state.turn.currentOwner === "player1" ? "opponent" : "player1"];
+  const changedZones = new Set();
+
+  for (const owner of owners) {
+    const activeZone = owner + "-active";
+    const activeCards = getCardsInZone(activeZone);
+    for (const card of activeCards) {
+      if (!card) continue;
+
+      // 中毒：造成 10 點傷害
+      if (card.poison) {
+        adjustCardDamage(card, 10, activeZone);
+        changedZones.add(activeZone);
+        showToast(`${ownerLabel(owner)}的 ${card.name} 中毒受到 10 點傷害`, "warn", 1800);
+        await delayMs(600);
+      }
+
+      // 燒傷：擲硬幣，反面 20 傷害，正面解除
+      if (card.burn) {
+        const coinResult = Math.random() < 0.5 ? "正面" : "反面";
+        await playCoinToss(coinResult, { broadcast: true, startedAt: Date.now() + 320, flipCount: 10 });
+        await delayMs(400);
+        if (coinResult === "正面") {
+          card.burn = false;
+          broadcastCardStats(card);
+          showToast(`${ownerLabel(owner)}的 ${card.name} 燒傷解除`, "success", 1800);
+        } else {
+          adjustCardDamage(card, 20, activeZone);
+          showToast(`${ownerLabel(owner)}的 ${card.name} 燒傷受到 20 點傷害`, "warn", 1800);
+        }
+        changedZones.add(activeZone);
+        await delayMs(600);
+      }
+
+      // 睡眠：擲硬幣，正面解除
+      if (card.behaviorStatus === "asleep") {
+        const coinResult = Math.random() < 0.5 ? "正面" : "反面";
+        await playCoinToss(coinResult, { broadcast: true, startedAt: Date.now() + 320, flipCount: 10 });
+        await delayMs(400);
+        if (coinResult === "正面") {
+          card.behaviorStatus = "";
+          card.rotationDeg = 0;
+          broadcastCardStats(card);
+          showToast(`${ownerLabel(owner)}的 ${card.name} 睡眠解除`, "success", 1800);
+        } else {
+          showToast(`${ownerLabel(owner)}的 ${card.name} 仍在睡眠`, "warn", 1800);
+        }
+        changedZones.add(activeZone);
+        await delayMs(600);
+      }
+    }
+  }
+  if (changedZones.size > 0) {
+    renderBoard({ zoneIds: Array.from(changedZones), overlay: false });
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 設置階段（起手後放置基礎寶可夢 → 確認完成 → 放獎勵卡）
+// ═══════════════════════════════════════════════
+
+function isCardBasicPokemon(card) {
+  if (!card) return false;
+  const stage = card.evolutionStage || resolveEvolutionStageForEntry(card);
+  if (stage === "基礎") return true;
+  const catalogCard = findDeckBuilderCatalogCardForEntry(card);
+  if (catalogCard) {
+    const catStage = String(catalogCard.evolutionStage || catalogCard.evolution_stage || "").trim();
+    if (catStage === "基礎") return true;
+  }
+  return false;
+}
+
+function enterSetupPhase(mulliganCounts = {}) {
+  state.setupPhase.active = true;
+  state.setupPhase.player1Ready = false;
+  state.setupPhase.opponentReady = false;
+  state.setupPhase.player1MulliganCount = mulliganCounts.player1 || 0;
+  state.setupPhase.opponentMulliganCount = mulliganCounts.opponent || 0;
+  updateSetupPhaseUi();
+  applySetupHighlights();
+}
+
+function exitSetupPhase() {
+  state.setupPhase.active = false;
+  state.setupPhase.player1Ready = false;
+  state.setupPhase.opponentReady = false;
+  clearSetupHighlights();
+  updateSetupPhaseUi();
+}
+
+function updateSetupPhaseUi() {
+  const indicator = document.getElementById("turn-indicator");
+  const textEl = document.getElementById("turn-indicator-text");
+  const endBtn = document.getElementById("end-turn-btn");
+  const setupBtn = document.getElementById("setup-done-btn");
+  const setupOppBtn = document.getElementById("setup-done-opp-btn");
+
+  if (!indicator) return;
+
+  if (state.setupPhase.active) {
+    indicator.classList.remove("hidden");
+    indicator.classList.remove("opponent-turn");
+    if (textEl) textEl.textContent = "設置階段 — 請放置基礎寶可夢";
+    if (endBtn) endBtn.classList.add("hidden");
+    if (setupBtn) {
+      setupBtn.classList.remove("hidden");
+      setupBtn.disabled = state.setupPhase.player1Ready;
+      setupBtn.textContent = state.setupPhase.player1Ready ? "我方已設置 ✓" : "我方設置完成";
+      setupBtn.classList.toggle("done", state.setupPhase.player1Ready);
+    }
+    if (setupOppBtn) {
+      // 單人模式：顯示對方設置按鈕；多人模式：不顯示（對方自行操作）
+      if (state.singlePlayer) {
+        setupOppBtn.classList.remove("hidden");
+        setupOppBtn.disabled = state.setupPhase.opponentReady;
+        setupOppBtn.textContent = state.setupPhase.opponentReady ? "對方已設置 ✓" : "對方設置完成";
+        setupOppBtn.classList.toggle("done", state.setupPhase.opponentReady);
+      } else {
+        setupOppBtn.classList.add("hidden");
+      }
+    }
+  } else {
+    if (setupBtn) { setupBtn.classList.add("hidden"); setupBtn.disabled = false; }
+    if (setupOppBtn) { setupOppBtn.classList.add("hidden"); setupOppBtn.disabled = false; }
+    if (endBtn) endBtn.classList.remove("hidden");
+  }
+}
+
+function applySetupHighlights() {
+  if (!state.setupPhase.active) return;
+  ["player1", "opponent"].forEach((owner) => {
+    // 該方已設置完成 → 不再高亮
+    if ((owner === "player1" && state.setupPhase.player1Ready) ||
+        (owner === "opponent" && state.setupPhase.opponentReady)) return;
+    const handZone = getOwnerHandZone(owner);
+    const handCards = getCardsInZone(handZone);
+    handCards.forEach((card) => {
+      const el = document.querySelector(`.card[data-card-id="${card.id}"]`);
+      if (!el) return;
+      if (isCardBasicPokemon(card)) {
+        el.classList.add("basic-highlight");
+        el.classList.remove("non-basic-dim");
+      } else {
+        el.classList.add("non-basic-dim");
+        el.classList.remove("basic-highlight");
+      }
+    });
+  });
+}
+
+function clearSetupHighlights() {
+  document.querySelectorAll(".card.basic-highlight").forEach((el) => el.classList.remove("basic-highlight"));
+  document.querySelectorAll(".card.non-basic-dim").forEach((el) => el.classList.remove("non-basic-dim"));
+}
+
+function isSetupPlacementAllowed(card, targetZoneId) {
+  if (!state.setupPhase.active) return true;
+  if (!card) return true;
+
+  const owner = card.owner;
+
+  // 該方已點擊設置完成 → 所有卡片鎖定
+  if ((owner === "player1" && state.setupPhase.player1Ready) ||
+      (owner === "opponent" && state.setupPhase.opponentReady)) {
+    showToast("已設置完成，無法移動卡片", "warn", 1200);
+    return false;
+  }
+
+  const fromHand = card.zoneId === getOwnerHandZone(owner);
+
+  // 設置階段只能從手牌拖基礎寶可夢到戰鬥區或備戰區，其他一律禁止
+  if (!fromHand) {
+    // 允許從戰鬥/備戰區之間移動（調整位置）
+    if (isBattleOrBenchMainZone(card.zoneId) && isBattleOrBenchMainZone(targetZoneId)) return true;
+    return false;
+  }
+
+  const isTargetActive = targetZoneId === owner + "-active";
+  const isTargetBench = new RegExp(`^${owner}-bench-\\d+$`).test(targetZoneId);
+
+  if (!isTargetActive && !isTargetBench) return false;
+
+  if (!isCardBasicPokemon(card)) {
+    showToast("設置階段僅能放置基礎寶可夢", "warn", 1500);
+    return false;
+  }
+
+  // 戰鬥區沒有寶可夢時，必須先放到戰鬥區
+  const activeZone = owner + "-active";
+  const activeCards = getCardsInZone(activeZone);
+  if (activeCards.length === 0 && !isTargetActive) {
+    showToast("請先將基礎寶可夢放置到戰鬥區", "warn", 1500);
+    return false;
+  }
+
+  return true;
+}
+
+async function placePrizeCardsForOwner(owner) {
+  const prizeZoneId = getOwnerPrizeZone(owner);
+  for (let i = 0; i < 6; i += 1) {
+    const top = drawCardFromDeck(owner, false);
+    if (!top) break;
+    await animateMoveSingleCard(top, prizeZoneId, { faceDown: true, delayMs: 150 });
+  }
+  appendGameLog(`${ownerLabel(owner)}放置 6 張獎勵卡`);
+}
+
+async function onSetupDone(owner) {
+  if (!state.setupPhase.active) return;
+
+  // 檢查戰鬥區是否有寶可夢
+  const activeZone = owner + "-active";
+  const activeCards = getCardsInZone(activeZone);
+  if (activeCards.length === 0) {
+    showToast(`${ownerLabel(owner)}必須將至少一隻基礎寶可夢放置到戰鬥區`, "warn", 2000);
+    return;
+  }
+
+  // 標記該方設置完成
+  if (owner === "player1") {
+    state.setupPhase.player1Ready = true;
+  } else {
+    state.setupPhase.opponentReady = true;
+  }
+  updateSetupPhaseUi();
+
+  // 各方設置完成後立即放置該方的獎勵卡
+  await placePrizeCardsForOwner(owner);
+  renderBoard();
+
+  // 多人模式廣播自己的設置完成
+  if (state.peer.multiplayerEnabled && owner === "player1") {
+    sendPeerAction({ type: ACTION_TYPES.SETUP_DONE, owner: "player1" });
+  }
+
+  // 檢查雙方是否都完成 → 進入補抽階段 → 遊戲開始
+  if (state.setupPhase.player1Ready && state.setupPhase.opponentReady) {
+    await finalizeSetupPhase();
+  }
+}
+
+async function finalizeSetupPhase() {
+  clearSetupHighlights();
+
+  // 補抽階段：對方重抽次數 - 我方重抽次數 = 補抽張數
+  const p1Mulligan = state.setupPhase.player1MulliganCount || 0;
+  const oppMulligan = state.setupPhase.opponentMulliganCount || 0;
+
+  // 我方可補抽（對手重抽多於自己）
+  const player1BonusDraw = oppMulligan - p1Mulligan;
+  // 對手可補抽（我方重抽多於對手）
+  const opponentBonusDraw = p1Mulligan - oppMulligan;
+
+  if (player1BonusDraw > 0) {
+    await showBonusDrawModal("player1", player1BonusDraw);
+  }
+  if (opponentBonusDraw > 0) {
+    if (state.singlePlayer) {
+      await showBonusDrawModal("opponent", opponentBonusDraw);
+    }
+    // 多人模式：對手端自己處理
+  }
+
+  // 結束設置階段
+  exitSetupPhase();
+
+  // 廣播遊戲開始
+  showBattleStartBanner("對戰開始");
+  startTurnSystem("player1");
+}
+
+function showBonusDrawModal(owner, maxDraw) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;";
+
+    const panel = document.createElement("div");
+    panel.style.cssText = "background:#1a2234;border:2px solid #3a7bd5;border-radius:12px;padding:32px 48px;text-align:center;min-width:340px;max-width:420px;";
+
+    const title = document.createElement("div");
+    title.style.cssText = "font-size:20px;font-weight:700;color:#fff;margin-bottom:12px;";
+    title.textContent = "補抽階段";
+
+    const desc = document.createElement("div");
+    desc.style.cssText = "font-size:14px;color:rgba(255,255,255,0.8);margin-bottom:20px;line-height:1.6;";
+    const ownerText = owner === "player1" ? "我方" : "對手";
+    const otherText = owner === "player1" ? "對手" : "我方";
+    const ownerMulligan = owner === "player1" ? state.setupPhase.player1MulliganCount : state.setupPhase.opponentMulliganCount;
+    const otherMulligan = owner === "player1" ? state.setupPhase.opponentMulliganCount : state.setupPhase.player1MulliganCount;
+    desc.textContent = `${otherText}重抽 ${otherMulligan} 次，${ownerText}重抽 ${ownerMulligan} 次。${ownerText}可補抽 ${maxDraw} 張卡片。`;
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:12px;justify-content:center;";
+
+    const drawBtn = document.createElement("button");
+    drawBtn.style.cssText = "padding:10px 24px;border:1px solid #3a7bd5;border-radius:8px;background:rgba(37,99,235,0.3);color:#fff;font-size:14px;font-weight:600;cursor:pointer;";
+    drawBtn.textContent = `補抽 ${maxDraw} 張`;
+    drawBtn.addEventListener("click", async () => {
+      const handZone = getOwnerHandZone(owner);
+      for (let i = 0; i < maxDraw; i++) {
+        const top = drawCardFromDeck(owner, false);
+        if (!top) break;
+        await animateMoveSingleCard(top, handZone, { faceUp: true, delayMs: 200 });
+      }
+      appendGameLog(`${ownerText}補抽 ${maxDraw} 張卡片`);
+      document.body.removeChild(overlay);
+      resolve();
+    });
+
+    const skipBtn = document.createElement("button");
+    skipBtn.style.cssText = "padding:10px 24px;border:1px solid rgba(255,255,255,0.3);border-radius:8px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);font-size:14px;font-weight:600;cursor:pointer;";
+    skipBtn.textContent = "全部不抽";
+    skipBtn.addEventListener("click", () => {
+      appendGameLog(`${ownerText}選擇不補抽`);
+      document.body.removeChild(overlay);
+      resolve();
+    });
+
+    btnRow.appendChild(drawBtn);
+    btnRow.appendChild(skipBtn);
+    panel.appendChild(title);
+    panel.appendChild(desc);
+    panel.appendChild(btnRow);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+  });
+}
+
+function setupSetupPhaseButtons() {
+  const setupBtn = document.getElementById("setup-done-btn");
+  const setupOppBtn = document.getElementById("setup-done-opp-btn");
+
+  if (setupBtn) {
+    setupBtn.addEventListener("click", () => {
+      void onSetupDone("player1");
+    });
+  }
+  if (setupOppBtn) {
+    setupOppBtn.addEventListener("click", () => {
+      void onSetupDone("opponent");
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 攻擊流程
+// ═══════════════════════════════════════════════
+function openAttackSelectModal(card) {
+  const modal = document.getElementById("attack-select-modal");
+  const list = document.getElementById("attack-select-list");
+  const title = document.getElementById("attack-select-title");
+  if (!modal || !list) return;
+
+  const attacks = resolveAttacksForCard(card);
+  if (!attacks || attacks.length === 0) {
+    showToast("此寶可夢沒有招式", "warn", 1800);
+    return;
+  }
+
+  title.textContent = `${card.name} — 選擇招式`;
+  list.innerHTML = "";
+
+  for (const atk of attacks) {
+    const item = document.createElement("div");
+    item.className = "attack-select-item";
+
+    const costDiv = document.createElement("div");
+    costDiv.className = "attack-cost";
+    if (Array.isArray(atk.cost)) {
+      for (const c of atk.cost) {
+        const icon = document.createElement("span");
+        icon.className = `energy-icon energy-${c}`;
+        icon.textContent = c.charAt(0);
+        costDiv.appendChild(icon);
+      }
+    }
+
+    const nameDiv = document.createElement("div");
+    nameDiv.className = "attack-name";
+    nameDiv.textContent = atk.name || "無名招式";
+
+    const dmgDiv = document.createElement("div");
+    dmgDiv.className = "attack-damage";
+    dmgDiv.textContent = atk.damage || "";
+
+    item.appendChild(costDiv);
+    item.appendChild(nameDiv);
+    item.appendChild(dmgDiv);
+
+    if (atk.effect_text) {
+      const effectDiv = document.createElement("div");
+      effectDiv.className = "attack-effect-text";
+      effectDiv.textContent = atk.effect_text;
+      item.appendChild(effectDiv);
+    }
+
+    item.addEventListener("click", () => {
+      closeAttackSelectModal();
+      void executeAttack(card, atk);
+    });
+    list.appendChild(item);
+  }
+
+  modal.classList.remove("hidden");
+  modal.setAttribute("aria-hidden", "false");
+
+  // 定位在卡片右側
+  const panel = modal.querySelector(".attack-select-panel");
+  if (panel) {
+    const cardEl = document.querySelector(`.card[data-card-id="${card.id}"]`);
+    if (cardEl) {
+      const cardRect = cardEl.getBoundingClientRect();
+      let left = cardRect.right + 8;
+      let top = cardRect.top;
+      // 確保不超出畫面右側
+      const panelWidth = 360;
+      if (left + panelWidth > window.innerWidth) {
+        left = cardRect.left - panelWidth - 8;
+      }
+      // 確保不超出畫面底部
+      const panelHeight = panel.offsetHeight || 300;
+      if (top + panelHeight > window.innerHeight) {
+        top = Math.max(8, window.innerHeight - panelHeight - 8);
+      }
+      if (top < 8) top = 8;
+      panel.style.position = "fixed";
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.margin = "0";
+    }
+  }
+}
+
+function closeAttackSelectModal() {
+  const modal = document.getElementById("attack-select-modal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  modal.setAttribute("aria-hidden", "true");
+  const panel = modal.querySelector(".attack-select-panel");
+  if (panel) {
+    panel.style.position = "";
+    panel.style.left = "";
+    panel.style.top = "";
+    panel.style.margin = "";
+  }
+}
+
+async function executeAttack(card, attack, { broadcast = true, fromRemote = false } = {}) {
+  if (!card || !attack) return;
+  const owner = card.owner;
+
+  if (!fromRemote) {
+    if (card.behaviorStatus === "paralyzed") {
+      showToast(`${card.name} 處於麻痺狀態，無法攻擊`, "warn", 2000);
+      return;
+    }
+    if (card.behaviorStatus === "asleep") {
+      showToast(`${card.name} 處於睡眠狀態，無法攻擊`, "warn", 2000);
+      return;
+    }
+    if (card.behaviorStatus === "confused") {
+      showToast(`${card.name} 處於混亂狀態，擲硬幣判定！`, "warn", 1800);
+      await delayMs(800);
+      const coinResult = Math.random() < 0.5 ? "正面" : "反面";
+      await playCoinToss(coinResult, { broadcast: true, startedAt: Date.now() + 320, flipCount: 10 });
+      await delayMs(600);
+      if (coinResult === "反面") {
+        const activeZone = owner + "-active";
+        adjustCardDamage(card, 30, activeZone);
+        renderBoard({ zoneIds: [activeZone], overlay: false });
+        broadcastCardStats(card);
+        showToast(`${card.name} 混亂中攻擊失敗，對自己造成 30 點傷害`, "error", 2200);
+        state.turn.hasAttackedThisTurn = true;
+        await delayMs(800);
+        await endCurrentTurn({ broadcast: true });
+        return;
+      }
+      showToast("正面！招式成立", "success", 1200);
+      await delayMs(600);
+    }
+  }
+
+  if (broadcast && state.peer.multiplayerEnabled && !fromRemote) {
+    sendPeerAction({
+      type: ACTION_TYPES.USE_ATTACK,
+      cardId: card.id,
+      syncId: card.syncId,
+      attackIndex: attack.index,
+      attackName: attack.name
+    });
+  }
+
+  await showAttackBanner(`${card.name} 使出 ${attack.name}！`);
+  state.turn.hasAttackedThisTurn = true;
+
+  if (!fromRemote) {
+    await delayMs(400);
+    await endCurrentTurn({ broadcast: true });
+  }
+}
+
+function setupAttackSelectModal() {
+  const closeBtn = document.getElementById("attack-select-close");
+  if (closeBtn) closeBtn.addEventListener("click", closeAttackSelectModal);
+  const modal = document.getElementById("attack-select-modal");
+  if (modal) modal.addEventListener("click", (e) => { if (e.target === modal) closeAttackSelectModal(); });
+}
+
+function setupEndTurnButton() {
+  const btn = document.getElementById("end-turn-btn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    if (!state.turn.active || state.turn.betweenTurns) return;
+    // 單人模式：可以結束任一方的回合；多人模式：只能結束自己的回合
+    if (!state.singlePlayer && state.turn.currentOwner !== "player1") {
+      showToast("目前不是你的回合", "warn", 1500);
+      return;
+    }
+    void endCurrentTurn({ broadcast: !state.singlePlayer });
+  });
+}
+
 function clearReadyStateAndUi() {
   state.ready.local = false;
   state.ready.remote = false;
@@ -6633,12 +7330,14 @@ async function triggerBattleStart({ broadcast = false, shuffleOrders = null } = 
       if (results.opponent && results.opponent.ok && results.opponent.mulliganCount > 0) {
         await showMulliganResultModal("對手", results.opponent.mulliganCount);
       }
+      // 暫存重抽次數供設置階段使用
+      state.setupPhase.player1MulliganCount = (results.player1 && results.player1.mulliganCount) || 0;
+      state.setupPhase.opponentMulliganCount = (results.opponent && results.opponent.mulliganCount) || 0;
     } finally {
       runtime.autoSetupRunning = false;
       updateAutoSetupButtonUi();
     }
   }
-  showBattleStartBanner("對戰開始");
   clearReadyStateAndUi();
   clearRematchStateAndUi();
   setImportProgress("player1", 0, 0, false);
@@ -6646,6 +7345,12 @@ async function triggerBattleStart({ broadcast = false, shuffleOrders = null } = 
   state.prizeCountSnapshot.player1 = null;
   state.prizeCountSnapshot.opponent = null;
   setGamePhase("遊戲中");
+  enterSetupPhase({
+    player1: state.setupPhase.player1MulliganCount,
+    opponent: state.setupPhase.opponentMulliganCount
+  });
+  renderBoard();
+  requestAnimationFrame(() => applySetupHighlights());
 }
 
 function checkAndStartBattle() {
@@ -6722,6 +7427,12 @@ async function triggerRematchStart({ broadcast = false } = {}) {
       state.prizeCountSnapshot.player1 = null;
       state.prizeCountSnapshot.opponent = null;
       setGamePhase("遊戲中");
+      enterSetupPhase({
+        player1: (results.player1 && results.player1.mulliganCount) || 0,
+        opponent: (results.opponent && results.opponent.mulliganCount) || 0
+      });
+      renderBoard();
+      requestAnimationFrame(() => applySetupHighlights());
     } else {
       showToast("無可用牌組，無法開始再來一局", "warn", 2200);
     }
@@ -6863,6 +7574,13 @@ async function startAutoSetupSequence() {
       if (results.opponent && results.opponent.ok && results.opponent.mulliganCount > 0) {
         await showMulliganResultModal("對手", results.opponent.mulliganCount);
       }
+      setGamePhase("遊戲中");
+      enterSetupPhase({
+        player1: (results.player1 && results.player1.mulliganCount) || 0,
+        opponent: (results.opponent && results.opponent.mulliganCount) || 0
+      });
+      renderBoard();
+      requestAnimationFrame(() => applySetupHighlights());
     } else {
       showToast("無可用牌組，未執行自動開局", "warn", 2200);
     }
@@ -7503,6 +8221,24 @@ async function onPeerData(data) {
       const count = Number(data.mulliganCount) || 0;
       if (count > 0) {
         await showMulliganResultModal("對手", count);
+      }
+    } else if (data.type === ACTION_TYPES.USE_ATTACK) {
+      const remoteCard = getCardBySyncKey("opponent", data.syncId);
+      if (remoteCard) {
+        const attacks = resolveAttacksForCard(remoteCard);
+        const atk = attacks.find(a => a.index === data.attackIndex) || { name: data.attackName || "招式", index: data.attackIndex };
+        await executeAttack(remoteCard, atk, { broadcast: false, fromRemote: true });
+      }
+    } else if (data.type === ACTION_TYPES.END_TURN) {
+      await endCurrentTurn({ broadcast: false });
+    } else if (data.type === ACTION_TYPES.SETUP_DONE) {
+      // 對手設置完成 → 放置對手獎勵卡
+      state.setupPhase.opponentReady = true;
+      updateSetupPhaseUi();
+      await placePrizeCardsForOwner("opponent");
+      renderBoard();
+      if (state.setupPhase.player1Ready && state.setupPhase.opponentReady) {
+        await finalizeSetupPhase();
       }
     } else if (data.type === ACTION_TYPES.INIT_STATE) {
       applyRemoteInitState(data);
@@ -9054,6 +9790,16 @@ function showStatusMenu(cardId, zoneId, x, y) {
     statusControls.classList.toggle("hidden", !isActiveMainZone(zoneId));
   }
 
+  // 攻擊按鈕：遊戲進行中的戰鬥區寶可夢
+  // 單人模式：雙方都可攻擊；多人模式：僅限我方
+  const attackRow = menu.querySelector(".attack-action-row");
+  if (attackRow) {
+    const isActive = isActiveMainZone(zoneId);
+    const allowAttack = isActive && state.gamePhase === "遊戲中" &&
+      (state.singlePlayer || zoneId === "player1-active");
+    attackRow.classList.toggle("hidden", !allowAttack);
+  }
+
   state.statusMenu.isOpen = true;
   state.statusMenu.cardId = cardId;
   state.statusMenu.zoneId = zoneId;
@@ -9287,12 +10033,21 @@ function collectMovedCardIds(beforeMap) {
 }
 
 function handleDrop(targetZoneId, rawCardIds) {
+  // 開局抽牌動畫進行中時鎖定所有拖曳
+  if (runtime.autoSetupRunning) return;
+
   const beforeMap = snapshotCardZones();
   const incomingCards = normalizeIncomingCardIds(rawCardIds);
   const movableCards = incomingCards.filter((c) => isCardMovableByViewer(c) && isDropAllowedForCard(c, targetZoneId));
 
   if (movableCards.length === 0) {
     return;
+  }
+
+  // 設置階段放置限制
+  if (state.setupPhase.active) {
+    const blocked = movableCards.some((c) => !isSetupPlacementAllowed(c, targetZoneId));
+    if (blocked) return;
   }
   logRendererDiagnostic("drop", {
     seq: runtime.diagnosticDragSeq,
@@ -9992,6 +10747,10 @@ function renderBoard(options = {}) {
         hideCardZoom();
       }
     }
+    // 設置階段：重新套用高亮
+    if (state.setupPhase.active) {
+      applySetupHighlights();
+    }
   } finally {
     runtime.renderInProgress = false;
     if (runtime.renderQueued) {
@@ -10438,6 +11197,26 @@ function setupStatusMenu() {
     if (action === "quick-discard") {
       discardMainCardWithAttach(card);
       hideStatusMenu();
+      return;
+    }
+
+    if (action === "attack") {
+      hideStatusMenu();
+      // 回合檢查：單人模式允許操作任一方，多人模式僅限自己回合
+      if (state.turn.active && !state.singlePlayer && state.turn.currentOwner !== "player1") {
+        showToast("目前不是你的回合", "warn", 1500);
+        return;
+      }
+      // 單人模式：檢查攻擊的卡片所屬方是否為當前回合方
+      if (state.turn.active && state.singlePlayer && card.owner !== state.turn.currentOwner) {
+        showToast("目前不是該方的回合", "warn", 1500);
+        return;
+      }
+      if (state.turn.active && state.turn.hasAttackedThisTurn) {
+        showToast("本回合已經攻擊過了", "warn", 1500);
+        return;
+      }
+      openAttackSelectModal(card);
       return;
     }
 
@@ -10999,6 +11778,9 @@ function initializeMainApp() {
   setupGreatVoidToggle();
   setupHandVisibilityToggle();
   setupReadyButton();
+  setupAttackSelectModal();
+  setupEndTurnButton();
+  setupSetupPhaseButtons();
   initDeckLibrary();
   setGamePhase("準備中");
   setupMatchModeGate();

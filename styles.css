@@ -2770,6 +2770,12 @@ body.deck-builder-window #deck-builder-modal .deck-builder-modal-panel {
   text-shadow: 0 0 30px rgba(37, 99, 235, 0.6), 0 4px 14px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   opacity: 0;
+  white-space: nowrap;
+  max-width: 95vw;
+}
+
+#attack-banner {
+  font-size: clamp(28px, 5vw, 60px);
 }
 
 .winner-banner {
@@ -3975,3 +3981,169 @@ body.pwa-mode {
    在 app.js initModalAnimations() 中直接驅動，
    不依賴 CSS class 或 @keyframes。
    ═══════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════
+   回合系統 / 攻擊選擇
+   ═══════════════════════════════════════════════ */
+.turn-indicator {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 18px;
+  border-radius: 24px;
+  border: 1px solid var(--color-glass-border);
+  background: var(--color-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: auto;
+  animation: turnIndicatorIn 0.3s ease forwards;
+}
+.turn-indicator #turn-indicator-text { white-space: nowrap; }
+.turn-indicator.opponent-turn { opacity: 0.7; }
+.end-turn-btn {
+  padding: 6px 16px;
+  border: 1px solid rgba(37, 99, 235, 0.4);
+  border-radius: 16px;
+  background: rgba(37, 99, 235, 0.25);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.end-turn-btn:hover {
+  background: rgba(37, 99, 235, 0.5);
+  border-color: rgba(37, 99, 235, 0.7);
+  box-shadow: 0 0 12px rgba(37, 99, 235, 0.3);
+}
+.end-turn-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+@keyframes turnIndicatorIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.attack-action-btn {
+  background: rgba(235, 64, 52, 0.18) !important;
+  border-color: rgba(235, 64, 52, 0.4) !important;
+  color: #ff8a80 !important;
+  font-weight: 700 !important;
+  text-align: center !important;
+}
+.attack-action-btn:hover {
+  background: rgba(235, 64, 52, 0.35) !important;
+  border-color: rgba(235, 64, 52, 0.7) !important;
+  box-shadow: 0 0 10px rgba(235, 64, 52, 0.25) !important;
+}
+
+#attack-select-modal {
+  z-index: 200;
+  /* 不用 grid/flex 撐滿，讓 panel 自適應 */
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+#attack-select-modal > * {
+  pointer-events: auto;
+}
+
+.attack-select-panel {
+  position: absolute;
+  min-width: 280px;
+  max-width: 400px;
+  width: max-content;
+  height: auto;
+  z-index: 201;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 16px rgba(37, 99, 235, 0.15);
+  border: 1px solid var(--color-glass-border);
+  border-radius: 12px;
+  background: var(--color-glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  overflow: hidden;
+}
+
+.attack-select-list {
+  padding: 8px 12px 12px;
+  display: grid;
+  gap: 8px;
+}
+.attack-select-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--color-glass-border);
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.06);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.attack-select-item:hover {
+  background: rgba(37, 99, 235, 0.2);
+  border-color: rgba(37, 99, 235, 0.5);
+  box-shadow: 0 0 10px rgba(37, 99, 235, 0.15);
+}
+.attack-cost { display: flex; gap: 3px; flex-shrink: 0; }
+.attack-cost .energy-icon {
+  width: 18px; height: 18px; border-radius: 50%;
+  display: inline-block; font-size: 10px; line-height: 18px;
+  text-align: center; font-weight: 700; color: #fff;
+}
+.energy-Grass      { background: #4caf50; }
+.energy-Fire       { background: #f44336; }
+.energy-Water      { background: #2196f3; }
+.energy-Lightning  { background: #ffc107; color: #333; }
+.energy-Psychic    { background: #9c27b0; }
+.energy-Fighting   { background: #795548; }
+.energy-Darkness   { background: #37474f; }
+.energy-Metal      { background: #78909c; }
+.energy-Fairy      { background: #e91e9f; }
+.energy-Dragon     { background: linear-gradient(135deg, #2196f3, #f44336); }
+.energy-Colorless  { background: #bdbdbd; color: #333; }
+.attack-name { font-weight: 600; font-size: 14px; color: #fff; }
+.attack-damage { font-weight: 700; font-size: 16px; color: #ff8a80; text-align: right; min-width: 36px; }
+.attack-effect-text {
+  grid-column: 1 / -1;
+  font-size: 12px; color: rgba(255, 255, 255, 0.7);
+  line-height: 1.4; margin-top: -4px;
+}
+
+/* --- 設置完成按鈕 --- */
+.setup-done-btn {
+  background: rgba(76, 175, 80, 0.25) !important;
+  border-color: rgba(76, 175, 80, 0.5) !important;
+}
+
+.setup-done-btn:hover:not(:disabled) {
+  background: rgba(76, 175, 80, 0.45) !important;
+  border-color: rgba(76, 175, 80, 0.8) !important;
+  box-shadow: 0 0 12px rgba(76, 175, 80, 0.3) !important;
+}
+
+.setup-done-btn.done {
+  background: rgba(76, 175, 80, 0.15) !important;
+  border-color: rgba(76, 175, 80, 0.3) !important;
+  color: rgba(255, 255, 255, 0.5) !important;
+}
+
+/* --- 基礎寶可夢高亮（設置階段） --- */
+.card.basic-highlight {
+  box-shadow: 0 0 12px 4px rgba(76, 175, 80, 0.7), 0 0 24px rgba(76, 175, 80, 0.3) !important;
+  border: 2px solid rgba(76, 175, 80, 0.8) !important;
+}
+
+.card.non-basic-dim {
+  opacity: 0.45 !important;
+  filter: grayscale(40%);
+}

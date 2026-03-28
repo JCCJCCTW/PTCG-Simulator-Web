@@ -197,6 +197,9 @@
         <button data-action="damage-minus-100">-100</button>
       </div>
       <div class="status-menu-row status-menu-note">可使用滑鼠滾輪增減傷害</div>
+      <div class="status-menu-row attack-action-row hidden">
+        <button data-action="attack" class="attack-action-btn">攻擊</button>
+      </div>
       <div class="status-menu-row">
         <button data-action="quick-discard">一鍵棄置</button>
       </div>
@@ -253,7 +256,25 @@
   </section>
 
   <div id="battle-start-banner" class="battle-start-banner hidden" aria-hidden="true">對戰開始</div>
+  <div id="attack-banner" class="battle-start-banner hidden" aria-hidden="true"></div>
   <div id="winner-banner" class="winner-banner hidden" aria-hidden="true">WINNER!</div>
+
+  <div id="turn-indicator" class="turn-indicator hidden">
+    <span id="turn-indicator-text">我方回合</span>
+    <button id="end-turn-btn" class="end-turn-btn" type="button">結束回合</button>
+    <button id="setup-done-btn" class="end-turn-btn setup-done-btn hidden" type="button">我方設置完成</button>
+    <button id="setup-done-opp-btn" class="end-turn-btn setup-done-btn hidden" type="button">對方設置完成</button>
+  </div>
+
+  <section id="attack-select-modal" class="hidden" aria-hidden="true">
+    <div class="attack-select-panel">
+      <header class="overlay-header">
+        <h3 id="attack-select-title">選擇招式</h3>
+        <button id="attack-select-close" class="overlay-close" type="button">X</button>
+      </header>
+      <div id="attack-select-list" class="attack-select-list"></div>
+    </div>
+  </section>
 
   <section id="deck-save-modal" class="deck-save-modal hidden" aria-hidden="true">
     <div class="overlay-panel deck-save-modal-panel">
@@ -473,11 +494,6 @@
 
   <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
-  <div id="rotate-prompt">
-    <div class="rotate-icon">📱</div>
-    <div>請將裝置旋轉為橫向</div>
-    <div style="font-size:14px;opacity:0.6;">Please rotate your device to landscape</div>
-  </div>
   <script src="./app.js"></script>
   <script>
     if ("serviceWorker" in navigator && !window.process) {
