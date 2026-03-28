@@ -4588,12 +4588,25 @@ function renderDeckBuilderDeckList() {
     saveBtn.disabled = !validation.valid;
   }
 
-  host.innerHTML = "";
   const displayCards = getDeckBuilderDeckDisplayCards();
   if (!displayCards.length) {
     host.innerHTML = '<div class="deck-builder-deck-empty">尚未加入任何卡片</div>';
     return;
   }
+
+  // 收集可重用的既有 img 元素（依 src 分組），避免重複解碼
+  const existingImgs = new Map();
+  host.querySelectorAll("img.deck-builder-deck-card-image").forEach((img) => {
+    const src = img.getAttribute("src") || "";
+    if (!existingImgs.has(src)) existingImgs.set(src, []);
+    existingImgs.get(src).push(img);
+  });
+
+  // 統計每張圖需要幾個，去重下載
+  const urlSet = new Set();
+  displayCards.forEach((item) => urlSet.add(item.entry.card.imageUrl || getCardBackImageUrl()));
+
+  host.innerHTML = "";
   displayCards.forEach((item) => {
     const { entry, displayKey } = item;
     const card = entry.card;
@@ -4622,12 +4635,21 @@ function renderDeckBuilderDeckList() {
 
     const shell = document.createElement("div");
     shell.className = "deck-builder-deck-card-shell";
-    const thumb = document.createElement("img");
-    thumb.className = "deck-builder-deck-card-image";
-    thumb.src = card.imageUrl || getCardBackImageUrl();
-    thumb.alt = card.name;
-    thumb.loading = "eager";
-    thumb.decoding = "async";
+    const imgSrc = card.imageUrl || getCardBackImageUrl();
+
+    // 重用已解碼的 img 元素
+    const reusable = existingImgs.get(imgSrc);
+    let thumb;
+    if (reusable && reusable.length > 0) {
+      thumb = reusable.pop();
+    } else {
+      thumb = document.createElement("img");
+      thumb.className = "deck-builder-deck-card-image";
+      thumb.src = imgSrc;
+      thumb.alt = card.name;
+      thumb.loading = "lazy";
+      thumb.decoding = "async";
+    }
     shell.appendChild(thumb);
 
     row.appendChild(shell);
