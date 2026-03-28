@@ -11951,6 +11951,10 @@ function initializeMainApp() {
 }
 
 seedDemoState();
+{
+  const vLabel = document.getElementById("app-version-label");
+  if (vLabel) vLabel.textContent = "v1.4.3";
+}
 if (IS_DECK_BUILDER_WINDOW) {
   initializeDeckBuilderWindowMode();
 } else {
