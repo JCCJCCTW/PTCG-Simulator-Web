@@ -6265,13 +6265,13 @@ function getFriendlyPeerErrorMessage(err) {
     case "browser-incompatible":
       return "瀏覽器不支援 Peer 連線";
     case "network":
-      return "網路不穩或無法連到 PeerJS 官方伺服器";
+      return "網路不穩或無法連到 PeerJS 官方伺服器，將自動重試";
     case "peer-unavailable":
       return "找不到對方 ID，請確認輸入是否正確";
     case "unavailable-id":
       return "此 ID 已被使用，系統將自動重新取得";
     case "server-error":
-      return "PeerJS 官方伺服器暫時不可用";
+      return "PeerJS 官方伺服器暫時不可用，將自動重試";
     case "socket-error":
       return "連線通道建立失敗，請檢查網路環境";
     default:
@@ -6826,16 +6826,33 @@ function showBonusDrawModal(owner, maxDraw) {
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display:flex;gap:12px;justify-content:center;";
 
+    let bonusDrawClicked = false;
+
     const drawBtn = document.createElement("button");
     drawBtn.style.cssText = "padding:10px 24px;border:1px solid #3a7bd5;border-radius:8px;background:rgba(37,99,235,0.3);color:#fff;font-size:14px;font-weight:600;cursor:pointer;";
     drawBtn.textContent = `補抽 ${maxDraw} 張`;
-    drawBtn.addEventListener("click", async () => {
+
+    const skipBtn = document.createElement("button");
+    skipBtn.style.cssText = "padding:10px 24px;border:1px solid rgba(255,255,255,0.3);border-radius:8px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);font-size:14px;font-weight:600;cursor:pointer;";
+    skipBtn.textContent = "全部不抽";
+
+    function lockBonusButtons() {
+      bonusDrawClicked = true;
       drawBtn.disabled = true;
       skipBtn.disabled = true;
       drawBtn.style.opacity = "0.5";
       skipBtn.style.opacity = "0.5";
-      drawBtn.style.cursor = "not-allowed";
-      skipBtn.style.cursor = "not-allowed";
+      drawBtn.style.pointerEvents = "none";
+      skipBtn.style.pointerEvents = "none";
+    }
+
+    function removeBonusOverlay() {
+      if (overlay.parentNode) document.body.removeChild(overlay);
+    }
+
+    drawBtn.addEventListener("click", async () => {
+      if (bonusDrawClicked) return;
+      lockBonusButtons();
       const handZone = getOwnerHandZone(owner);
       for (let i = 0; i < maxDraw; i++) {
         const top = drawCardFromDeck(owner, false);
@@ -6843,18 +6860,15 @@ function showBonusDrawModal(owner, maxDraw) {
         await animateMoveSingleCard(top, handZone, { faceUp: true, delayMs: 200 });
       }
       appendGameLog(`${ownerText}補抽 ${maxDraw} 張卡片`);
-      if (overlay.parentNode) document.body.removeChild(overlay);
+      removeBonusOverlay();
       resolve();
     });
 
-    const skipBtn = document.createElement("button");
-    skipBtn.style.cssText = "padding:10px 24px;border:1px solid rgba(255,255,255,0.3);border-radius:8px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);font-size:14px;font-weight:600;cursor:pointer;";
-    skipBtn.textContent = "全部不抽";
     skipBtn.addEventListener("click", () => {
-      drawBtn.disabled = true;
-      skipBtn.disabled = true;
+      if (bonusDrawClicked) return;
+      lockBonusButtons();
       appendGameLog(`${ownerText}選擇不補抽`);
-      if (overlay.parentNode) document.body.removeChild(overlay);
+      removeBonusOverlay();
       resolve();
     });
 
@@ -8532,7 +8546,9 @@ async function setupPeerNetworking(force = false) {
 
   const strategies = [
     { debug: 1 },
-    { key: "peerjs", debug: 1 }
+    { key: "peerjs", debug: 1 },
+    { host: "0.peerjs.com", port: 443, secure: true, debug: 1 },
+    { host: "0.peerjs.com", port: 443, secure: true, key: "peerjs", debug: 1 }
   ];
 
   let lastErr = null;
