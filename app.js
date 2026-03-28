@@ -6853,13 +6853,18 @@ function showBonusDrawModal(owner, maxDraw) {
     drawBtn.addEventListener("click", async () => {
       if (bonusDrawClicked) return;
       lockBonusButtons();
-      const handZone = getOwnerHandZone(owner);
-      for (let i = 0; i < maxDraw; i++) {
-        const top = drawCardFromDeck(owner, false);
-        if (!top) break;
-        await animateMoveSingleCard(top, handZone, { faceUp: true, delayMs: 200 });
+      try {
+        const handZone = getOwnerHandZone(owner);
+        for (let i = 0; i < maxDraw; i++) {
+          const top = drawCardFromDeck(owner, false);
+          if (!top) break;
+          await animateMoveSingleCard(top, handZone, { faceUp: true, delayMs: 200 });
+        }
+        appendGameLog(`${ownerText}補抽 ${maxDraw} 張卡片`);
+      } catch (err) {
+        console.error("補抽過程出錯:", err);
+        appendGameLog(`${ownerText}補抽過程出錯`);
       }
-      appendGameLog(`${ownerText}補抽 ${maxDraw} 張卡片`);
       removeBonusOverlay();
       resolve();
     });
@@ -8411,14 +8416,23 @@ async function ensurePeerJsLoaded() {
     return true;
   }
   if (runtime.isElectron && typeof window.require === "function") {
+    // Electron: 用 require 直接載入 node_modules 的 peerjs
+    const tryPaths = ["peerjs"];
     try {
-      const peerModule = window.require("peerjs");
-      window.Peer = peerModule.Peer || peerModule;
-      if (typeof window.Peer === "function") {
-        return true;
+      const path = window.require("path");
+      tryPaths.push(path.join(__dirname, "vendor", "peerjs.min.js"));
+      tryPaths.push(path.join(__dirname, "node_modules", "peerjs", "dist", "peerjs.min.js"));
+    } catch {}
+    for (const p of tryPaths) {
+      try {
+        const peerModule = window.require(p);
+        window.Peer = peerModule.Peer || peerModule.default || peerModule;
+        if (typeof window.Peer === "function") {
+          return true;
+        }
+      } catch {
+        // try next path
       }
-    } catch {
-      // fallback to script loading
     }
   }
   const candidates = [
