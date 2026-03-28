@@ -2931,6 +2931,15 @@ function getDeckBuilderSearchRoots() {
     // Ignore cwd resolution failures.
   }
   try {
+    if (typeof process !== "undefined" && process.env && process.env.PORTABLE_EXECUTABLE_DIR) {
+      const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
+      roots.push(portableDir);
+      appendRuntimeRootCandidates(portableDir);
+    }
+  } catch {
+    // Ignore portable dir resolution failures.
+  }
+  try {
     if (typeof process !== "undefined" && process.execPath) {
       const execDir = runtime.nodePath.dirname(process.execPath);
       roots.push(execDir);
@@ -5445,7 +5454,14 @@ async function preloadImageWithFallback(card) {
         const img = new Image();
         img.decoding = "sync";
         img.loading = "eager";
+        const timer = setTimeout(() => {
+          img.onload = null;
+          img.onerror = null;
+          img.src = "";
+          reject(new Error("timeout"));
+        }, 8000);
         img.onload = async () => {
+          clearTimeout(timer);
           try {
             if (typeof img.decode === "function") {
               await img.decode();
@@ -5456,7 +5472,7 @@ async function preloadImageWithFallback(card) {
           retainDecodedImageHandle(url, img);
           resolve();
         };
-        img.onerror = () => reject(new Error("load-failed"));
+        img.onerror = () => { clearTimeout(timer); reject(new Error("load-failed")); };
         img.src = url;
       });
       setImageCacheStatus(url, true);
