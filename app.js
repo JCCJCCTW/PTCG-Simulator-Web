@@ -6605,6 +6605,43 @@ async function endCurrentTurn({ broadcast = false } = {}) {
   }
 }
 
+async function applyRemoteEndTurn() {
+  if (!state.turn.active) return;
+
+  // 對手結束回合 → 對手的麻痺解除
+  const oppActiveCards = getCardsInZone("opponent-active");
+  for (const c of oppActiveCards) {
+    if (c.behaviorStatus === "paralyzed") {
+      resetBattleState(c);
+    }
+  }
+
+  // 回合間狀態結算
+  state.turn.betweenTurns = true;
+  updateTurnIndicatorUi();
+  await resolveBetweenTurnEffects();
+
+  // 切換到我方回合
+  state.turn.currentOwner = "player1";
+  state.turn.turnNumber += 1;
+  state.turn.hasAttackedThisTurn = false;
+  state.turn.betweenTurns = false;
+  updateTurnIndicatorUi();
+
+  showBattleStartBanner("我方回合");
+
+  // 我方回合開始抽牌
+  if (state.gamePhase === "遊戲中") {
+    await delayMs(600);
+    const drawnCard = drawCardFromDeck("player1", false);
+    if (drawnCard) {
+      const handZone = getOwnerHandZone("player1");
+      await animateMoveSingleCard(drawnCard, handZone, { faceUp: true, delayMs: 200 });
+      appendGameLog("我方回合開始，抽取 1 張卡");
+    }
+  }
+}
+
 // ═══════════════════════════════════════════════
 // 回合中間時點 — 狀態結算
 // ═══════════════════════════════════════════════
@@ -6740,7 +6777,9 @@ function updateSetupPhaseUi() {
 
 function applySetupHighlights() {
   if (!state.setupPhase.active) return;
-  ["player1", "opponent"].forEach((owner) => {
+  // 多人模式下只高亮我方手牌，不顯示對手的基礎寶可夢
+  const owners = state.singlePlayer ? ["player1", "opponent"] : ["player1"];
+  owners.forEach((owner) => {
     // 該方已設置完成 → 不再高亮
     if ((owner === "player1" && state.setupPhase.player1Ready) ||
         (owner === "opponent" && state.setupPhase.opponentReady)) return;
@@ -8344,7 +8383,7 @@ async function onPeerData(data) {
         await executeAttack(remoteCard, atk, { broadcast: false, fromRemote: true });
       }
     } else if (data.type === ACTION_TYPES.END_TURN) {
-      await endCurrentTurn({ broadcast: false });
+      await applyRemoteEndTurn();
     } else if (data.type === ACTION_TYPES.SETUP_DONE) {
       // 對手設置完成 → 放置對手獎勵卡
       state.setupPhase.opponentReady = true;
