@@ -9962,6 +9962,19 @@ function moveToGenericZone(targetZoneId, incomingCards) {
   incomingCards.forEach((c) => moveCardToZone(c, targetZoneId));
 }
 
+function moveCardsToDeckTop(owner, incomingCards) {
+  const deckZoneId = getOwnerDeckZone(owner);
+  const incomingSet = new Set(incomingCards.map((card) => card.id));
+  const existingDeckCards = getCardsInZone(deckZoneId).filter((card) => !incomingSet.has(card.id));
+
+  incomingCards.forEach((card) => {
+    moveCardToZone(card, deckZoneId);
+    card.isFaceUp = false;
+  });
+
+  reorderDeck(owner, [...incomingCards, ...existingDeckCards]);
+}
+
 function moveCardsToDeckBottom(owner, incomingCards) {
   const deckZoneId = getOwnerDeckZone(owner);
   const incomingSet = new Set(incomingCards.map((card) => card.id));
@@ -10096,7 +10109,7 @@ function handleDrop(targetZoneId, rawCardIds) {
 
   movableCards.forEach((c) => {
     const fromDeck = c.zoneId === getOwnerDeckZone(c.owner) || state.overlay.type === "library";
-    if (fromDeck && !PRIZE_ZONES.has(targetZoneId) && targetZoneId !== "library-view") {
+    if (fromDeck && !PRIZE_ZONES.has(targetZoneId) && targetZoneId !== "library-view" && targetZoneId !== "player1-deck" && targetZoneId !== "opponent-deck" && !isDeckBottomZone(targetZoneId)) {
       c.isFaceUp = true;
     }
   });
@@ -10168,6 +10181,31 @@ function handleDrop(targetZoneId, rawCardIds) {
   if (targetZoneId === "library-view" || targetZoneId === "discard-view") {
     clearSelections({ refresh: true });
     renderBoard({ zoneIds: [], overlay: true, indicators: false, resources: false, winner: false, animations: false });
+    return;
+  }
+
+  // 拖曳到牌組區 → 放到牌組最上方
+  if (targetZoneId === "player1-deck" || targetZoneId === "opponent-deck") {
+    const owner = getZoneOwner(targetZoneId);
+    moveCardsToDeckTop(owner, movableCards);
+    const movedIds = movableCards.map((card) => card.id);
+    clearSelections({ refresh: true });
+    renderBoard({
+      zoneIds: collectAffectedZoneIds(movedIds, beforeMap, [targetZoneId]),
+      overlay: true,
+      indicators: true,
+      resources: true,
+      winner: true,
+      animations: true
+    });
+    triggerDropEffects(targetZoneId, movedIds);
+    broadcastMoveSync(movedIds, beforeMap);
+    broadcastZoneStats(movableCards.map((card) => beforeMap.get(card.id)));
+    sendPeerAction({
+      type: ACTION_TYPES.SHUFFLE,
+      owner,
+      order: getCardsInZone(targetZoneId).map((card) => card.syncId)
+    });
     return;
   }
 
