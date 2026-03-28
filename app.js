@@ -3248,7 +3248,7 @@ async function ensureDeckBuilderCatalogLoaded() {
 }
 
 function rebuildCatalogImageRefs() {
-  if (!runtime.deckBuilderCatalogReady) return;
+  if (!runtime.deckBuilderCatalogReady) return 0;
   const catalog = runtime.deckBuilderCatalog;
   let resolved = 0;
   catalog.forEach((card) => {
@@ -3265,6 +3265,19 @@ function rebuildCatalogImageRefs() {
     card.imageUrl = card.imageRefs.primary || getCardBackImageUrl();
     if (localImageUrl) resolved += 1;
   });
+
+  // 更新場上所有已匯入卡片的 imageRefs
+  cards.forEach((card) => {
+    const newRefs = buildDefaultImageRefs(card);
+    if (newRefs && newRefs.primary) {
+      card.imageRefs = newRefs;
+      card.imageRefs.activeUrl = "";
+    }
+  });
+  // 清除圖片快取，讓 preload 重新載入
+  state.imageCache.clear();
+  runtime.preloadedImageHandles.clear();
+
   return resolved;
 }
 
@@ -9001,7 +9014,13 @@ function setupImageRootSetting() {
         try { localStorage.setItem(DECK_BUILDER_CUSTOM_IMAGE_ROOT_KEY, chosen); } catch {}
         syncDisplay();
         const resolved = rebuildCatalogImageRefs();
+        renderBoard();
         showToast(`已設定圖片路徑（找到 ${resolved} 張本地圖片）`, "success", 2500);
+        // 重新預載場上卡片圖片
+        const allCards = cards.filter((c) => c.owner === "player1" || c.owner === "opponent");
+        if (allCards.length > 0) {
+          preloadImages(allCards, ++runtime.preloadJobSeqByOwner["player1"], "player1");
+        }
       }
     } catch (err) {
       showToast("無法開啟資料夾選擇", "error", 2000);
@@ -9012,6 +9031,7 @@ function setupImageRootSetting() {
     try { localStorage.removeItem(DECK_BUILDER_CUSTOM_IMAGE_ROOT_KEY); } catch {}
     syncDisplay();
     rebuildCatalogImageRefs();
+    renderBoard();
     showToast("已清除自訂圖片路徑", "success", 1800);
   });
 
