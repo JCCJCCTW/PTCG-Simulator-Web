@@ -3001,9 +3001,15 @@ function resolveDeckBuilderImagePath(relativePath = "") {
     return "";
   }
   const normalized = raw.replace(/[\\/]+/g, runtime.nodePath.sep);
+  // 如果 image_path 以 "images/" 開頭，也嘗試去掉前綴直接拼接
+  // 這樣使用者無論指向 images 本身或其上層都能找到
+  const stripped = normalized.replace(/^images[/\\]/, "");
   const candidates = [];
   for (const root of getDeckBuilderSearchRoots()) {
     candidates.push(runtime.nodePath.resolve(root, normalized));
+    if (stripped !== normalized) {
+      candidates.push(runtime.nodePath.resolve(root, stripped));
+    }
     candidates.push(runtime.nodePath.resolve(root, "cards", normalized));
   }
   for (const candidate of candidates) {
