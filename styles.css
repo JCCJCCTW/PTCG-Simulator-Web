@@ -3892,9 +3892,9 @@ body.pwa-mode .settings-section:has(#deck-image-root-display) {
   right: 6px;
   bottom: 4px;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(255, 255, 255, 0.4);
   pointer-events: none;
-  z-index: 9;
+  z-index: 100;
   font-family: monospace;
   user-select: none;
 }
