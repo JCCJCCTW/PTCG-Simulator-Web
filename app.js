@@ -1861,7 +1861,7 @@ function showMulliganResultModal(ownerLabel, mulliganCount) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "mulligan-overlay";
-    overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
 
     const panel = document.createElement("div");
     panel.style.cssText = "background:#1a2234;border:2px solid #3a7bd5;border-radius:12px;padding:32px 48px;text-align:center;min-width:320px;";
@@ -6806,7 +6806,7 @@ async function finalizeSetupPhase() {
 function showBonusDrawModal(owner, maxDraw) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
 
     const panel = document.createElement("div");
     panel.style.cssText = "background:#1a2234;border:2px solid #3a7bd5;border-radius:12px;padding:32px 48px;text-align:center;min-width:340px;max-width:420px;";
@@ -6830,6 +6830,12 @@ function showBonusDrawModal(owner, maxDraw) {
     drawBtn.style.cssText = "padding:10px 24px;border:1px solid #3a7bd5;border-radius:8px;background:rgba(37,99,235,0.3);color:#fff;font-size:14px;font-weight:600;cursor:pointer;";
     drawBtn.textContent = `補抽 ${maxDraw} 張`;
     drawBtn.addEventListener("click", async () => {
+      drawBtn.disabled = true;
+      skipBtn.disabled = true;
+      drawBtn.style.opacity = "0.5";
+      skipBtn.style.opacity = "0.5";
+      drawBtn.style.cursor = "not-allowed";
+      skipBtn.style.cursor = "not-allowed";
       const handZone = getOwnerHandZone(owner);
       for (let i = 0; i < maxDraw; i++) {
         const top = drawCardFromDeck(owner, false);
@@ -6837,7 +6843,7 @@ function showBonusDrawModal(owner, maxDraw) {
         await animateMoveSingleCard(top, handZone, { faceUp: true, delayMs: 200 });
       }
       appendGameLog(`${ownerText}補抽 ${maxDraw} 張卡片`);
-      document.body.removeChild(overlay);
+      if (overlay.parentNode) document.body.removeChild(overlay);
       resolve();
     });
 
@@ -6845,8 +6851,10 @@ function showBonusDrawModal(owner, maxDraw) {
     skipBtn.style.cssText = "padding:10px 24px;border:1px solid rgba(255,255,255,0.3);border-radius:8px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);font-size:14px;font-weight:600;cursor:pointer;";
     skipBtn.textContent = "全部不抽";
     skipBtn.addEventListener("click", () => {
+      drawBtn.disabled = true;
+      skipBtn.disabled = true;
       appendGameLog(`${ownerText}選擇不補抽`);
-      document.body.removeChild(overlay);
+      if (overlay.parentNode) document.body.removeChild(overlay);
       resolve();
     });
 

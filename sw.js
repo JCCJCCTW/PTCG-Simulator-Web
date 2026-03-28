@@ -1,4 +1,4 @@
-const CACHE_NAME = "ptcg-v3";
+const CACHE_NAME = "ptcg-v4";
 const CORE_ASSETS = [
   "./index.html",
   "./app.js",
@@ -30,18 +30,19 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // 卡片圖片：network first, cache fallback
+  // 卡片圖片：cache first, background revalidate (stale-while-revalidate)
   if (url.hostname === "asia.pokemon-card.com" || url.pathname.includes("/images/")) {
     event.respondWith(
-      fetch(event.request)
-        .then((resp) => {
+      caches.match(event.request).then((cached) => {
+        const fetchPromise = fetch(event.request).then((resp) => {
           if (resp.ok) {
             const clone = resp.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
           }
           return resp;
-        })
-        .catch(() => caches.match(event.request))
+        }).catch(() => cached);
+        return cached || fetchPromise;
+      })
     );
     return;
   }
