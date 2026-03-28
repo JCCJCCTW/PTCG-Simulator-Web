@@ -6805,7 +6805,11 @@ async function finalizeSetupPhase() {
 
 function showBonusDrawModal(owner, maxDraw) {
   return new Promise((resolve) => {
+    // 移除所有可能殘留的 bonus overlay
+    document.querySelectorAll(".bonus-draw-overlay").forEach(el => el.remove());
+
     const overlay = document.createElement("div");
+    overlay.className = "bonus-draw-overlay";
     overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
 
     const panel = document.createElement("div");
@@ -6826,33 +6830,33 @@ function showBonusDrawModal(owner, maxDraw) {
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display:flex;gap:12px;justify-content:center;";
 
-    let bonusDrawClicked = false;
+    let resolved = false;
+
+    function finish() {
+      if (resolved) return;
+      resolved = true;
+      document.querySelectorAll(".bonus-draw-overlay").forEach(el => el.remove());
+      resolve();
+    }
 
     const drawBtn = document.createElement("button");
+    drawBtn.type = "button";
     drawBtn.style.cssText = "padding:10px 24px;border:1px solid #3a7bd5;border-radius:8px;background:rgba(37,99,235,0.3);color:#fff;font-size:14px;font-weight:600;cursor:pointer;";
     drawBtn.textContent = `補抽 ${maxDraw} 張`;
 
     const skipBtn = document.createElement("button");
+    skipBtn.type = "button";
     skipBtn.style.cssText = "padding:10px 24px;border:1px solid rgba(255,255,255,0.3);border-radius:8px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);font-size:14px;font-weight:600;cursor:pointer;";
     skipBtn.textContent = "全部不抽";
 
-    function lockBonusButtons() {
-      bonusDrawClicked = true;
+    drawBtn.onclick = async function() {
+      if (resolved) return;
+      drawBtn.onclick = null;
+      skipBtn.onclick = null;
       drawBtn.disabled = true;
       skipBtn.disabled = true;
       drawBtn.style.opacity = "0.5";
       skipBtn.style.opacity = "0.5";
-      drawBtn.style.pointerEvents = "none";
-      skipBtn.style.pointerEvents = "none";
-    }
-
-    function removeBonusOverlay() {
-      if (overlay.parentNode) document.body.removeChild(overlay);
-    }
-
-    drawBtn.addEventListener("click", async () => {
-      if (bonusDrawClicked) return;
-      lockBonusButtons();
       try {
         const handZone = getOwnerHandZone(owner);
         for (let i = 0; i < maxDraw; i++) {
@@ -6863,19 +6867,20 @@ function showBonusDrawModal(owner, maxDraw) {
         appendGameLog(`${ownerText}補抽 ${maxDraw} 張卡片`);
       } catch (err) {
         console.error("補抽過程出錯:", err);
-        appendGameLog(`${ownerText}補抽過程出錯`);
       }
-      removeBonusOverlay();
-      resolve();
-    });
+      finish();
+    };
 
-    skipBtn.addEventListener("click", () => {
-      if (bonusDrawClicked) return;
-      lockBonusButtons();
+    skipBtn.onclick = function() {
+      if (resolved) return;
+      drawBtn.onclick = null;
+      skipBtn.onclick = null;
       appendGameLog(`${ownerText}選擇不補抽`);
-      removeBonusOverlay();
-      resolve();
-    });
+      finish();
+    };
+
+    // 阻止 overlay 背景的 pointer 事件穿透到下方
+    overlay.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
 
     btnRow.appendChild(drawBtn);
     btnRow.appendChild(skipBtn);
@@ -6884,6 +6889,9 @@ function showBonusDrawModal(owner, maxDraw) {
     panel.appendChild(btnRow);
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
+
+    // 確保按鈕可被點擊（focus）
+    drawBtn.focus();
   });
 }
 
