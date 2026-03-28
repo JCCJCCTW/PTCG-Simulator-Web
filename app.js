@@ -3072,6 +3072,7 @@ function normalizeDeckBuilderCard(raw = {}) {
     attacks: normalizedParts.attacks,
     abilities: normalizedParts.abilities,
     specialRules: normalizedParts.specialRules,
+    rawImagePath: String(raw.image_path || raw.imagePath || "").trim(),
     imageUrl: imageRefs.primary || getCardBackImageUrl(),
     imageRefs,
     versionLabel: "",
@@ -3244,6 +3245,27 @@ async function ensureDeckBuilderCatalogLoaded() {
     runtime.deckBuilderLoadPromise = null;
   });
   return runtime.deckBuilderLoadPromise;
+}
+
+function rebuildCatalogImageRefs() {
+  if (!runtime.deckBuilderCatalogReady) return;
+  const catalog = runtime.deckBuilderCatalog;
+  let resolved = 0;
+  catalog.forEach((card) => {
+    const localImagePath = resolveDeckBuilderImagePath(card.rawImagePath);
+    const localImageUrl = toDeckBuilderFileUrl(localImagePath);
+    const onlineUrlById = getCardImageUrlById(card.cardId);
+    const fallbackPrimary = onlineUrlById || getCardImageUrl(card.series, card.number);
+    const fallbackSecondary = getSecondaryImageUrl(card.series, card.number);
+    card.imageRefs = {
+      primary: localImageUrl || fallbackPrimary || fallbackSecondary || "",
+      secondary: fallbackPrimary && fallbackPrimary !== localImageUrl ? fallbackPrimary : (fallbackSecondary || ""),
+      placeholder: ""
+    };
+    card.imageUrl = card.imageRefs.primary || getCardBackImageUrl();
+    if (localImageUrl) resolved += 1;
+  });
+  return resolved;
 }
 
 function buildDeckBuilderFallbackCard(entry = {}) {
@@ -8971,14 +8993,15 @@ function setupImageRootSetting() {
     try {
       const { ipcRenderer } = require("electron");
       const result = await ipcRenderer.invoke("show-open-dialog", {
-        title: "選擇卡片圖片資料夾（deck-builder-data 根目錄）",
+        title: "選擇包含 images 資料夾的目錄",
         properties: ["openDirectory"]
       });
       if (result && !result.canceled && result.filePaths && result.filePaths[0]) {
         const chosen = result.filePaths[0];
         try { localStorage.setItem(DECK_BUILDER_CUSTOM_IMAGE_ROOT_KEY, chosen); } catch {}
         syncDisplay();
-        showToast("已設定圖片路徑，請重新載入卡表", "success", 2500);
+        const resolved = rebuildCatalogImageRefs();
+        showToast(`已設定圖片路徑（找到 ${resolved} 張本地圖片）`, "success", 2500);
       }
     } catch (err) {
       showToast("無法開啟資料夾選擇", "error", 2000);
@@ -8988,6 +9011,7 @@ function setupImageRootSetting() {
   clearBtn.addEventListener("click", () => {
     try { localStorage.removeItem(DECK_BUILDER_CUSTOM_IMAGE_ROOT_KEY); } catch {}
     syncDisplay();
+    rebuildCatalogImageRefs();
     showToast("已清除自訂圖片路徑", "success", 1800);
   });
 
