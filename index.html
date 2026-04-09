@@ -200,6 +200,12 @@
       <div class="status-menu-row attack-action-row hidden">
         <button data-action="attack" class="attack-action-btn">攻擊</button>
       </div>
+      <div class="status-menu-row ability-action-row hidden">
+        <button data-action="ability" class="attack-action-btn">特性</button>
+      </div>
+      <div class="status-menu-row trainer-action-row hidden">
+        <button data-action="use-trainer" class="attack-action-btn">使用</button>
+      </div>
       <div class="status-menu-row">
         <button data-action="quick-discard">一鍵棄置</button>
       </div>
@@ -220,6 +226,13 @@
         </header>
         <div id="overlay-hint" class="overlay-hint hidden"></div>
         <div id="overlay-zone" class="overlay-zone" data-zone-id=""></div>
+        <div id="overlay-selection-toolbar" class="overlay-selection-toolbar hidden">
+          <div id="overlay-selection-status" class="overlay-selection-status">已選 0 / 0 張</div>
+          <div class="overlay-selection-actions">
+            <button id="overlay-selection-cancel" class="overlay-selection-btn secondary" type="button">取消</button>
+            <button id="overlay-selection-confirm" class="overlay-selection-btn primary" type="button">確認</button>
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -496,6 +509,9 @@
 
   <script src="./vendor/peerjs.min.js"></script>
   <div id="app-version-label"></div>
+  <script src="./effect-handlers.js"></script>
+  <script src="./effect-custom-handlers.js"></script>
+  <script src="./effect-engine.js"></script>
   <script src="./app.js"></script>
   <script>
     if ("serviceWorker" in navigator && !window.process) {

@@ -1369,6 +1369,19 @@ body.dragging-active::after {
   right: auto;
 }
 
+.overlay.selection-mode {
+  left: 14px;
+  right: 14px;
+  width: auto;
+  z-index: 80;
+  background: rgba(4, 10, 20, 0.62);
+}
+
+.overlay.selection-mode.overlay-left {
+  left: 14px;
+  right: 14px;
+}
+
 .overlay-panel {
   width: 100%;
   height: 100%;
@@ -1379,8 +1392,18 @@ body.dragging-active::after {
   -webkit-backdrop-filter: blur(20px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 20px rgba(37, 99, 235, 0.10);
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto 1fr auto;
   overflow: hidden;
+}
+
+.overlay.selection-mode .overlay-panel {
+  width: min(420px, 36vw);
+  margin-left: auto;
+}
+
+.overlay.selection-mode.overlay-left .overlay-panel {
+  margin-left: 0;
+  margin-right: auto;
 }
 
 .overlay-header {
@@ -1434,6 +1457,77 @@ body.dragging-active::after {
 
 .overlay-zone .card {
   margin-top: 0;
+}
+
+.overlay-selection-toolbar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(7, 12, 22, 0.48);
+}
+
+.overlay-selection-status {
+  font-size: 13px;
+  color: rgba(229, 241, 255, 0.88);
+}
+
+.overlay-selection-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.overlay-selection-btn {
+  min-width: 88px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.16s ease, filter 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.overlay-selection-btn.secondary {
+  background: rgba(107, 114, 128, 0.24);
+}
+
+.overlay-selection-btn.primary {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.86), rgba(14, 165, 233, 0.82));
+}
+
+body.selection-modal-active #board-root > :not(#overlay-root) {
+  pointer-events: none !important;
+  user-select: none;
+  filter: grayscale(0.18) brightness(0.76);
+}
+
+body.selection-modal-active .top-left-controls,
+body.selection-modal-active .top-right-controls,
+body.selection-modal-active #resource-monitor,
+body.selection-modal-active #deck-import-panel,
+body.selection-modal-active #mode-gate,
+body.selection-modal-active .context-menu {
+  pointer-events: none !important;
+  user-select: none;
+  opacity: 0.55;
+}
+
+body.selection-modal-active #overlay-root,
+body.selection-modal-active #overlay-root * {
+  pointer-events: auto;
+}
+
+.overlay-selection-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.overlay-selection-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.2);
 }
 
 @media (max-width: 1160px) {
@@ -4160,4 +4254,22 @@ body.pwa-mode {
 .card.non-basic-dim {
   opacity: 0.45 !important;
   filter: grayscale(40%);
+}
+.zone-slot.evolution-drop-allowed {
+  background: rgba(63, 186, 116, 0.16);
+  box-shadow: 0 0 0 2px rgba(94, 234, 152, 0.78), 0 0 26px rgba(74, 222, 128, 0.28);
+}
+
+.zone-slot.evolution-drop-disabled {
+  background: rgba(107, 114, 128, 0.1);
+}
+
+.card.evolution-target-highlight {
+  box-shadow: 0 0 0 2px rgba(94, 234, 152, 0.92), 0 0 22px rgba(74, 222, 128, 0.42) !important;
+  transform: translateY(-2px);
+}
+
+.card.evolution-target-dim {
+  opacity: 0.3 !important;
+  filter: grayscale(0.92) saturate(0.45) brightness(0.72);
 }

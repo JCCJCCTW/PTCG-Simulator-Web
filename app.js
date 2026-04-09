@@ -139,6 +139,8 @@ const ACTION_TYPES = {
   COIN_TOSS: "COIN_TOSS",
   MULLIGAN_RESULT: "MULLIGAN_RESULT",
   USE_ATTACK: "USE_ATTACK",
+  USE_ABILITY: "USE_ABILITY",
+  PLAY_TRAINER: "PLAY_TRAINER",
   END_TURN: "END_TURN",
   SETUP_DONE: "SETUP_DONE"
 };
@@ -178,7 +180,17 @@ const state = {
     owner: null,
     zoneId: null,
     scrollTop: 0,
-    scrollLeft: 0
+    scrollLeft: 0,
+    sourceZoneId: null,
+    title: "",
+    hint: "",
+    cards: [],
+    selectionMode: false,
+    selectionMin: 0,
+    selectionMax: 0,
+    selectionAllowCancel: true,
+    selectionConfirmText: "確認",
+    selectionCancelText: "取消"
   },
   deckMenu: {
     isOpen: false,
@@ -318,6 +330,8 @@ const runtime = {
   gameLogs: [],
   overlayRenderToken: 0,
   overlayRenderPending: false,
+  pendingOverlayChoiceResolve: null,
+  overlayChoiceCancelled: false,
   renderInProgress: false,
   renderQueued: false,
   renderQueuedOptions: null,
@@ -1003,7 +1017,7 @@ function mapRawCardType(rawType, fallbackName) {
   if (t.includes("能量") || t.includes("energy")) {
     return "Energy";
   }
-  if (t.includes("物品") || t.includes("支援") || t.includes("競技場") || t.includes("trainer") || t.includes("item") || t.includes("support")) {
+  if (t.includes("訓練家") || t.includes("物品") || t.includes("支援") || t.includes("競技場") || t.includes("trainer") || t.includes("item") || t.includes("support") || t.includes("stadium")) {
     return "Trainer";
   }
   return classifyCardType(fallbackName || "");
@@ -1290,6 +1304,7 @@ function buildCardsFromEntries(entries, owner, startId) {
   let id = startId;
   let syncId = 1;
   entries.forEach((entry) => {
+    const catalogCard = findDeckBuilderCatalogCardForEntry(entry);
     for (let i = 0; i < entry.count; i += 1) {
       nextCards.push({
         id,
@@ -1297,13 +1312,20 @@ function buildCardsFromEntries(entries, owner, startId) {
         syncId,
         zoneId: getOwnerDeckZone(owner),
         isFaceUp: false,
+        cardId: Number(entry.cardId) || Number(catalogCard && catalogCard.cardId) || 0,
         name: entry.name,
         cardType: entry.cardType,
         elementType: entry.elementType || inferElementTypeByText(entry.name),
         evolutionStage: resolveEvolutionStageForEntry(entry),
+        evolvesFromName: resolveEvolvesFromNameForEntry(entry),
+        hp: Number(entry.hp || (catalogCard && catalogCard.hp) || 0),
+        evolutionChain: Array.isArray(catalogCard && catalogCard.evolutionChain) ? catalogCard.evolutionChain.slice() : [],
         series: entry.series,
         number: entry.number,
         imageRefs: getDeckImageRefs(owner, syncId, entry),
+        attacks: Array.isArray(catalogCard && catalogCard.attacks) ? catalogCard.attacks : [],
+        abilities: Array.isArray(catalogCard && catalogCard.abilities) ? catalogCard.abilities : [],
+        effectSpecs: Array.isArray(catalogCard && catalogCard.effectSpecs) ? catalogCard.effectSpecs : [],
         poison: false,
         burn: false,
         behaviorStatus: "",
@@ -1381,6 +1403,9 @@ function createRemoteCardFromSyncPayload(owner, payload = {}) {
     isFaceUp: !!payload.isFaceUp,
     ...identity,
     imageRefs: getDeckImageRefs(owner, Number(payload.syncId) || 0, identity),
+    playedFromHandToEvolveTurn: Number(payload.playedFromHandToEvolveTurn) || 0,
+    playedFromHandToEvolveSourceZone: String(payload.playedFromHandToEvolveSourceZone || ""),
+    playedFromHandToEvolveTargetZone: String(payload.playedFromHandToEvolveTargetZone || ""),
     poison: !!payload.poison,
     burn: !!payload.burn,
     behaviorStatus: String(payload.behaviorStatus || ""),
@@ -1661,6 +1686,44 @@ function getTypeHint(defenderType, attackerType) {
     return { text: "抵抗力 -30", className: "resistance" };
   }
   return null;
+}
+
+function applyWeaknessResistance(attacker, defender, damage, ignoreWeakness) {
+  if (!attacker || !defender || damage <= 0) return damage;
+  const catalogDefender = findDeckBuilderCatalogCardForEntry(defender);
+  if (!catalogDefender) return damage;
+  const attackerType = String(getCardElementType(attacker) || "").trim().toLowerCase();
+  if (!attackerType) return damage;
+  let result = damage;
+  // 弱點計算：從防禦方卡片的 weakness 欄位讀取，格式如 "Fire ×2"
+  if (!ignoreWeakness) {
+    const weaknessText = String(catalogDefender.weakness || "").trim();
+    if (weaknessText && weaknessText !== "--") {
+      const weakMatch = weaknessText.match(/^(\S+)\s*[×x×]\s*(\d+)/i);
+      if (weakMatch) {
+        const weakType = weakMatch[1].toLowerCase();
+        const multiplier = parseInt(weakMatch[2], 10) || 2;
+        if (weakType === attackerType) {
+          result = result * multiplier;
+          if (typeof appendGameLog === "function") appendGameLog(`弱點！傷害 ×${multiplier}`);
+        }
+      }
+    }
+  }
+  // 抗性計算：從防禦方卡片的 resistance 欄位讀取，格式如 "Fighting -30"
+  const resistText = String(catalogDefender.resistance || "").trim();
+  if (resistText && resistText !== "--") {
+    const resistMatch = resistText.match(/^(\S+)\s*(-?\d+)/);
+    if (resistMatch) {
+      const resistType = resistMatch[1].toLowerCase();
+      const reduction = Math.abs(parseInt(resistMatch[2], 10)) || 30;
+      if (resistType === attackerType) {
+        result = Math.max(0, result - reduction);
+        if (typeof appendGameLog === "function") appendGameLog(`抗性！傷害 -${reduction}`);
+      }
+    }
+  }
+  return result;
 }
 
 function updateActiveTypeHintForDefender(defenderZoneId) {
@@ -3044,6 +3107,7 @@ function normalizeDeckBuilderCard(raw = {}) {
   const cardType = String(raw.card_type || raw.cardType || "").trim();
   const subtype = String(raw.trainer_subtype_code || raw.trainerSubtype || "").trim();
   const attribute = String(raw.attribute || raw.elementType || "").trim();
+  const rawEffectSpecs = Array.isArray(raw.effect_specs) ? raw.effect_specs : Array.isArray(raw.effectSpecs) ? raw.effectSpecs : [];
   const localImagePath = resolveDeckBuilderImagePath(raw.image_path || raw.imagePath || "");
   const localImageUrl = toDeckBuilderFileUrl(localImagePath);
   const onlineUrlById = getCardImageUrlById(raw.card_id || raw.id);
@@ -3068,6 +3132,8 @@ function normalizeDeckBuilderCard(raw = {}) {
     attribute,
     hp: Number(raw.hp) || 0,
     evolutionStage: String(raw.evolution_stage || "").trim(),
+    evolvesFromName: String(raw.evolves_from_name || raw.evolvesFromName || "").trim(),
+    evolutionChain: Array.isArray(raw.evolution_chain) ? raw.evolution_chain.map((name) => String(name || "").trim()).filter(Boolean) : [],
     productName: String(raw.product_name || "").trim(),
     regulationMark: normalizeDeckBuilderRegulationMark(raw.regulation_mark || ""),
     weakness: String(raw.weakness || "").trim(),
@@ -3078,6 +3144,16 @@ function normalizeDeckBuilderCard(raw = {}) {
     attacks: normalizedParts.attacks,
     abilities: normalizedParts.abilities,
     specialRules: normalizedParts.specialRules,
+    effectSpecs: rawEffectSpecs.map((spec) => ({
+      source_type: spec.source_type || spec.sourceType || "attack",
+      source_index: Number(spec.source_index || spec.sourceIndex) || 1,
+      status: String(spec.status || "pending").trim(),
+      handler: String(spec.handler || spec.simulator_handler || "").trim(),
+      params: spec.params && typeof spec.params === "object"
+        ? spec.params
+        : (spec.payload_json && typeof spec.payload_json === "object" ? spec.payload_json : null),
+      notes: String(spec.notes || "").trim()
+    })),
     rawImagePath: String(raw.image_path || raw.imagePath || "").trim(),
     imageUrl: imageRefs.primary || getCardBackImageUrl(),
     imageRefs,
@@ -3316,6 +3392,8 @@ function buildDeckBuilderFallbackCard(entry = {}) {
     attribute,
     hp: 0,
     evolutionStage: "",
+    evolvesFromName: "",
+    evolutionChain: [],
     productName: "",
     regulationMark: "",
     weakness: "",
@@ -3326,6 +3404,7 @@ function buildDeckBuilderFallbackCard(entry = {}) {
     attacks: [],
     abilities: [],
     specialRules: [],
+    effectSpecs: [],
     imageUrl: (entry.imageRefs && (entry.imageRefs.primary || entry.imageRefs.secondary)) || getCardBackImageUrl(),
     imageRefs: cloneImageRefs(entry.imageRefs) || buildDefaultImageRefs(entry),
     versionLabel: getDeckBuilderVariantLabel({ series, number, cardType, attribute, subtype: "", productName: "" }),
@@ -5730,6 +5809,25 @@ function getPreviewAnchorElementsByOwner(owner) {
   return [];
 }
 
+function getSelectionZoomAnchor() {
+  if (!state.overlay.isOpen || !state.overlay.selectionMode) {
+    return null;
+  }
+  const overlayRoot = document.getElementById("overlay-root");
+  const overlayPanel = overlayRoot ? overlayRoot.querySelector(".overlay-panel") : null;
+  if (!overlayRoot || !overlayPanel) {
+    return null;
+  }
+  const rect = overlayPanel.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+  return {
+    rect,
+    onLeft: overlayRoot.classList.contains("overlay-left")
+  };
+}
+
 function getElementsUnionRect(elements) {
   if (!elements || elements.length === 0) {
     return null;
@@ -5759,8 +5857,29 @@ function positionCardZoom(zoom, pointer = null, card = null) {
   const vh = window.innerHeight || document.documentElement.clientHeight || 0;
   const rect = zoom.getBoundingClientRect();
   const pad = 16;
+  const selectionAnchor = getSelectionZoomAnchor();
   const anchorRect = card ? getElementsUnionRect(getPreviewAnchorElementsByOwner(card.owner)) : null;
   const boardRect = getElementsUnionRect([document.querySelector(".board")].filter(Boolean));
+
+  if (selectionAnchor) {
+    const gap = 18;
+    const panelRect = selectionAnchor.rect;
+    const preferredLeft = selectionAnchor.onLeft
+      ? panelRect.right + gap
+      : panelRect.left - rect.width - gap;
+    const left = Math.max(
+      pad,
+      Math.min(preferredLeft, vw - rect.width - pad)
+    );
+    const top = Math.max(
+      pad,
+      Math.min(panelRect.top, vh - rect.height - pad)
+    );
+    zoom.style.left = `${left}px`;
+    zoom.style.top = `${top}px`;
+    zoom.style.right = "auto";
+    return;
+  }
 
   if (anchorRect) {
     const anchorWidth = Math.max(0, anchorRect.right - anchorRect.left);
@@ -5839,7 +5958,10 @@ function showCardZoom(card, pointer = null) {
     positionCardZoom(zoom, pointer, card);
   };
   zoomImg.src = resolvePreferredImageUrl(card);
-  zoom.classList.toggle("overlay-preview", !!state.overlay.isOpen);
+  const isSelection = !!state.overlay.isOpen && state.overlay.selectionMode;
+  const overlayOnLeft = !!state.overlay.isOpen && document.querySelector(".overlay.overlay-left");
+  // 選擇模式下放大圖始終靠右；非選擇模式且 overlay 在右側時放大圖移左避免重疊
+  zoom.classList.toggle("overlay-preview", !!state.overlay.isOpen && !isSelection && !overlayOnLeft);
   positionCardZoom(zoom, pointer, card);
 }
 
@@ -6517,6 +6639,667 @@ function resolveAttacksForCard(card) {
   return [];
 }
 
+function resolveAbilitiesForCard(card) {
+  if (!card) return [];
+  const catalogCard = findDeckBuilderCatalogCardForEntry(card);
+  if (catalogCard && Array.isArray(catalogCard.abilities)) {
+    return catalogCard.abilities;
+  }
+  return Array.isArray(card.abilities) ? card.abilities : [];
+}
+
+function resolveAbilityEffectSpecs(card, ability) {
+  if (!card || !ability || typeof resolveEffectSpecs !== "function") {
+    return [];
+  }
+  return resolveEffectSpecs(card, "ability", Number(ability.index) || 1);
+}
+
+function normalizeTextForMatch(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isEnergyCard(card) {
+  const type = normalizeTextForMatch(card && card.cardType);
+  return type.includes("energy") || type.includes("能量");
+}
+
+// ── 攻擊能量需求判定 ──
+const COST_TYPE_TO_ELEMENT = {
+  grass: "grass", fire: "fire", water: "water",
+  lightning: "electric", psychic: "psychic", fighting: "fighting",
+  darkness: "dark", metal: "metal", dragon: "dragon"
+};
+
+function resolveEnergyProvides(energyCard, hostCard) {
+  const catalog = findDeckBuilderCatalogCardForEntry(energyCard);
+  const specs = catalog && (Array.isArray(catalog.effectSpecs) ? catalog.effectSpecs : Array.isArray(catalog.effect_specs) ? catalog.effect_specs : []);
+  if (specs && specs.length) {
+    for (const spec of specs) {
+      if (spec.handler !== "energyProvide" || !spec.params) continue;
+      const p = spec.params;
+      // 條件性能量：檢查是否滿足條件
+      if (p.bonus_effect && p.bonus_effect.if_attached_to && hostCard) {
+        const cond = p.bonus_effect.if_attached_to;
+        const st = resolveEvolutionStageForEntry(hostCard);
+        let condMet = false;
+        if (cond === "basic_pokemon") condMet = !st || st === "基礎";
+        else if (cond === "evolution_pokemon") condMet = !!st && st !== "基礎";
+        else if (cond === "stage2_pokemon") condMet = !!st && (st.includes("2階") || st.toLowerCase().includes("stage2"));
+        if (condMet && Array.isArray(p.bonus_effect.provides)) {
+          if (p.bonus_effect.provides.length >= 8) return [""];
+          return p.bonus_effect.provides.map((t) => (COST_TYPE_TO_ELEMENT[t.toLowerCase()] || inferElementTypeByText(t)));
+        }
+      }
+      const provides = p.provides;
+      if (Array.isArray(provides)) {
+        return provides.map((t) => (COST_TYPE_TO_ELEMENT[t.toLowerCase()] || inferElementTypeByText(t)));
+      }
+      if (typeof provides === "string" && provides) {
+        return [COST_TYPE_TO_ELEMENT[provides.toLowerCase()] || inferElementTypeByText(provides)];
+      }
+    }
+  }
+  return [energyCard.elementType || inferElementTypeByText(energyCard.name || "")];
+}
+
+function getEnergyUnitCount(energyCard, hostCard) {
+  return resolveEnergyProvides(energyCard, hostCard).length;
+}
+
+function getAttachedEnergyTypes(card) {
+  const attachZone = UNIQUE_MAIN_TO_ATTACH[card && card.zoneId];
+  if (!attachZone) return [];
+  const result = [];
+  getCardsInZone(attachZone)
+    .filter((c) => isEnergyCard(c))
+    .forEach((c) => { result.push(...resolveEnergyProvides(c, card)); });
+  return result;
+}
+
+function meetsEnergyCost(card, attack) {
+  if (!attack || !Array.isArray(attack.cost) || attack.cost.length === 0) return true;
+  const available = getAttachedEnergyTypes(card);
+  // 每張能量可能提供多單位，但這裡 available 已展平成個別單位
+  // 標記 wildcard（空字串或含多屬性的能量 = 可當任何色）
+  const used = new Array(available.length).fill(false);
+  // 先匹配指定屬性（優先用精確匹配的能量，避免浪費萬用能量）
+  const typedCosts = attack.cost.filter((c) => c.toLowerCase() !== "colorless");
+  for (const cost of typedCosts) {
+    const needType = COST_TYPE_TO_ELEMENT[cost.toLowerCase()] || cost.toLowerCase();
+    let found = false;
+    // 先嘗試精確匹配
+    for (let i = 0; i < available.length; i++) {
+      if (!used[i] && available[i] === needType) {
+        used[i] = true;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      // 嘗試用萬用能量（空字串 = 可提供任意屬性的特殊能量）
+      for (let i = 0; i < available.length; i++) {
+        if (!used[i] && available[i] === "") {
+          used[i] = true;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found) return false;
+  }
+  // 再用剩餘能量填無色需求
+  const colorlessNeeded = attack.cost.filter((c) => c.toLowerCase() === "colorless").length;
+  const remaining = used.filter((u) => !u).length;
+  return remaining >= colorlessNeeded;
+}
+
+function isTrainerCard(card) {
+  const type = normalizeTextForMatch(card && card.cardType);
+  return type.includes("trainer") || type.includes("訓練家");
+}
+
+function isPokemonCard(card) {
+  return !!card && !isTrainerCard(card) && !isEnergyCard(card);
+}
+
+function isBasicEvolutionStageValue(value) {
+  const stage = String(value || "").trim().toLowerCase();
+  return !stage || stage.includes("basic") || stage.includes("基礎");
+}
+
+function isEvolutionPokemonCard(card) {
+  if (!card || isTrainerCard(card) || isEnergyCard(card)) {
+    return false;
+  }
+  return !isBasicEvolutionStageValue(resolveEvolutionStageForEntry(card));
+}
+
+function getHandPokemonPlacementRule(card, targetZoneId) {
+  if (!card || !isBattleOrBenchMainZone(targetZoneId)) {
+    return { allowed: true, reason: "" };
+  }
+
+  const fromHand = card.zoneId === getOwnerHandZone(card.owner);
+  if (!fromHand) {
+    return { allowed: true, reason: "" };
+  }
+
+  if (isTrainerCard(card) || isEnergyCard(card)) {
+    return { allowed: false, reason: "只有寶可夢可以放置在戰鬥區或備戰區" };
+  }
+
+  const existingMainCards = getCardsInZone(targetZoneId).filter((c) => c.id !== card.id);
+  const stage = resolveEvolutionStageForEntry(card);
+  const evolvesFromName = resolveEvolvesFromNameForEntry(card);
+  const requiresPreviousPokemon = (!!stage && stage !== "基礎") || !!evolvesFromName;
+
+  if (!requiresPreviousPokemon) {
+    if (existingMainCards.length > 0) {
+      return { allowed: false, reason: "基礎寶可夢不能直接疊在其他寶可夢上" };
+    }
+    return { allowed: true, reason: "" };
+  }
+
+  if (existingMainCards.length === 0) {
+    return { allowed: false, reason: "進化寶可夢不能直接放置到場上" };
+  }
+
+  const currentPokemon = existingMainCards[0];
+  if (isTrainerCard(currentPokemon) || isEnergyCard(currentPokemon)) {
+    return { allowed: false, reason: "戰鬥區或備戰區必須先有對應的寶可夢才能進化" };
+  }
+
+  if (!evolvesFromName) {
+    return { allowed: false, reason: "這張進化寶可夢缺少進化前資料，無法直接放置" };
+  }
+
+  if (String(currentPokemon.name || "").trim() !== evolvesFromName) {
+    // 檢查進化鏈：若 evolves_from_name 不在場上，但場上寶可夢在進化鏈中位於前方位置也允許進化
+    let chain = Array.isArray(card.evolutionChain) && card.evolutionChain.length > 0
+      ? card.evolutionChain
+      : resolveEvolutionChainForEntry(card);
+    const cardSelfName = String(card.name || "").trim();
+    const currentName = String(currentPokemon.name || "").trim();
+    const selfIdx = chain.lastIndexOf(cardSelfName);
+    const currentIdx = chain.indexOf(currentName);
+    if (selfIdx > 0 && currentIdx >= 0 && currentIdx < selfIdx) {
+      return { allowed: true, reason: "" };
+    }
+    return { allowed: false, reason: `${card.name} 只能從 ${evolvesFromName} 進化` };
+  }
+
+  return { allowed: true, reason: "" };
+}
+
+function abilityText(ability) {
+  return String(ability && (ability.effect_text || ability.effect || ability.text) || "").trim();
+}
+
+function getTrainerSubtype(card) {
+  const meta = findDeckBuilderCatalogCardForEntry(card) || {};
+  return String(card && (card.trainerSubtype || card.trainer_subtype_raw) || meta.trainerSubtype || meta.trainer_subtype_raw || meta.subtype || "").trim();
+}
+
+function isStadiumTrainer(card) {
+  const subtype = normalizeTextForMatch(getTrainerSubtype(card));
+  return subtype.includes("stadium") || subtype.includes("競技場");
+}
+
+function abilityTextIndicatesManualUse(ability) {
+  const text = abilityText(ability);
+  return /可使用|使用1次|使用一次|在自己的回合|從自己的手牌/.test(text);
+}
+
+function isPassiveAbilitySpec(spec) {
+  if (!spec || typeof spec !== "object") {
+    return false;
+  }
+  const handler = String(spec.handler || "").trim();
+  if (handler === "reduceDamage" || handler === "preventStatus" || handler === "freeRetreat" || handler === "energyProvide") {
+    return true;
+  }
+  const effect = String(spec.params && spec.params.effect || "").trim();
+  return effect.startsWith("prevent_")
+    || effect.startsWith("while_on_bench_")
+    || effect.startsWith("when_active_damaged_by_opponent_attack_")
+    || effect === "future_pokemon_free_retreat_and_plus_20_to_opponent_active"
+    || effect === "ancient_pokemon_hp_plus_60_and_cure_prevent_special_conditions";
+}
+
+function getActivatableAbilitiesForCard(card) {
+  return resolveAbilitiesForCard(card).filter((ability) => {
+    const specs = resolveAbilityEffectSpecs(card, ability);
+    if (specs.length > 0 && specs.every(isPassiveAbilitySpec)) {
+      return false;
+    }
+    return abilityTextIndicatesManualUse(ability) && canUseAbilityNow(card, ability, { silent: true });
+  });
+}
+
+function abilityRequiresOwnTurn(ability) {
+  const text = abilityText(ability);
+  return text.includes("在自己的回合");
+}
+
+async function tryAutoTriggerPlacementAbility(card) {
+  if (!card || state.gamePhase !== "遊戲中" || state.setupPhase.active) return;
+  const abilities = resolveAbilitiesForCard(card);
+  for (const ability of abilities) {
+    const specs = resolveAbilityEffectSpecs(card, ability);
+    const hasPlacementTrigger = specs.some(function(spec) {
+      const handler = String(spec && spec.handler || "").trim();
+      return handler.startsWith("when_placed_from_hand");
+    });
+    if (!hasPlacementTrigger) continue;
+    // 自動發動此特性
+    void showAttackBanner(`${card.name} 發動特性 ${ability.name || "特性"}！`);
+    const result = await executeAbilityEffects(card, ability);
+    if (result.executed) {
+      markAbilityUsedThisTurn(card, ability);
+      appendGameLog(`${ownerLabel(card.owner)}的 ${card.name} 自動發動特性「${ability.name || "特性"}」`);
+    }
+    await checkAndHandleKnockouts();
+    break;
+  }
+}
+
+function abilityTriggers(card, ability) {
+  const collected = [];
+  resolveAbilityEffectSpecs(card, ability).forEach((spec) => {
+    const raw = spec && spec.params && (spec.params.triggers || spec.params.trigger);
+    if (Array.isArray(raw)) {
+      raw.forEach((value) => collected.push(String(value || "").trim()));
+    } else if (raw) {
+      collected.push(String(raw || "").trim());
+    }
+  });
+  return [...new Set(collected.filter(Boolean))];
+}
+
+function abilityIsOncePerTurn(ability) {
+  const text = abilityText(ability);
+  return !text.includes("不限次數") && /使用1次|使用一次/.test(text);
+}
+
+function abilityUsageKey(ability) {
+  return `${Number(ability && ability.index) || 1}:${String(ability && ability.name || "").trim()}`;
+}
+
+function wasAbilityUsedThisTurn(card, ability) {
+  const usage = card && card.abilityUsedTurnMap;
+  if (!usage || typeof usage !== "object") {
+    return false;
+  }
+  return Number(usage[abilityUsageKey(ability)] || 0) === Number(state.turn.turnNumber || 0);
+}
+
+function markAbilityUsedThisTurn(card, ability) {
+  if (!card) {
+    return;
+  }
+  if (!card.abilityUsedTurnMap || typeof card.abilityUsedTurnMap !== "object") {
+    card.abilityUsedTurnMap = {};
+  }
+  card.abilityUsedTurnMap[abilityUsageKey(ability)] = Number(state.turn.turnNumber || 0);
+}
+
+function playedFromHandToEvolveThisTurn(card) {
+  return Number(card && card.playedFromHandToEvolveTurn || 0) === Number(state.turn.turnNumber || 0);
+}
+
+function getAbilityUnavailableReason(card, ability) {
+  const triggers = abilityTriggers(card, ability);
+  if (triggers.includes("played_from_hand_to_evolve") && !playedFromHandToEvolveThisTurn(card)) {
+    return "此特性只能在從手牌完成進化的當回合使用";
+  }
+  if (abilityIsOncePerTurn(ability) && wasAbilityUsedThisTurn(card, ability)) {
+    return "這個特性本回合已經使用過了";
+  }
+  return "";
+}
+
+function resolveEvolvesFromNameForEntry(cardLike) {
+  const direct = String((cardLike && (cardLike.evolvesFromName || cardLike.evolves_from_name)) || "").trim();
+  if (direct) return direct;
+  const s = normalizeSeries(cardLike && cardLike.series || "");
+  const n = normalizeCardNumber(cardLike && cardLike.number || "");
+  if (s && n && runtime.deckBuilderCatalogBySeriesNumber) {
+    const key = `${s}|${n}`.toLowerCase();
+    const matches = runtime.deckBuilderCatalogBySeriesNumber.get(key);
+    if (matches && matches.length > 0) {
+      const catalogValue = String(matches[0].evolvesFromName || matches[0].evolves_from_name || "").trim();
+      if (catalogValue) {
+        return catalogValue;
+      }
+    }
+  }
+  return "";
+}
+
+function resolveEvolutionChainForEntry(cardLike) {
+  const direct = Array.isArray(cardLike && (cardLike.evolutionChain || cardLike.evolution_chain))
+    ? (cardLike.evolutionChain || cardLike.evolution_chain)
+    : [];
+  const normalizedDirect = direct.map((name) => String(name || "").trim()).filter(Boolean);
+  if (normalizedDirect.length > 0) {
+    return normalizedDirect;
+  }
+  const s = normalizeSeries(cardLike && cardLike.series || "");
+  const n = normalizeCardNumber(cardLike && cardLike.number || "");
+  if (s && n && runtime.deckBuilderCatalogBySeriesNumber) {
+    const key = `${s}|${n}`.toLowerCase();
+    const matches = runtime.deckBuilderCatalogBySeriesNumber.get(key);
+    if (matches && matches.length > 0) {
+      return (matches[0].evolutionChain || matches[0].evolution_chain || [])
+        .map((name) => String(name || "").trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function findCatalogCardsByExactName(name, preferredSeries = "") {
+  const targetName = String(name || "").trim();
+  if (!targetName || !Array.isArray(runtime.deckBuilderCatalog)) {
+    return [];
+  }
+  const matches = runtime.deckBuilderCatalog.filter((card) => String(card && card.name || "").trim() === targetName);
+  if (!matches.length) {
+    return [];
+  }
+  const normalizedSeries = normalizeSeries(preferredSeries || "");
+  if (!normalizedSeries) {
+    return matches;
+  }
+  const preferred = matches.filter((card) => normalizeSeries(card && card.series || "") === normalizedSeries);
+  return preferred.length ? preferred : matches;
+}
+
+function resolveRareCandyBasicNameForEntry(cardLike, visited = null) {
+  const chain = resolveEvolutionChainForEntry(cardLike);
+  const selfName = String(cardLike && cardLike.name || "").trim();
+  const evolvesFromName = resolveEvolvesFromNameForEntry(cardLike);
+  const stage = resolveEvolutionStageForEntry(cardLike);
+  if (!selfName) {
+    return "";
+  }
+  if (isBasicEvolutionStageValue(stage)) {
+    return selfName;
+  }
+  const visitedSet = visited instanceof Set ? visited : new Set();
+  const visitKey = `${normalizeSeries(cardLike && cardLike.series || "")}|${selfName}|${evolvesFromName}`;
+  if (visitedSet.has(visitKey)) {
+    return "";
+  }
+  visitedSet.add(visitKey);
+  if (chain.length > 0) {
+    const lastIndex = chain.findLastIndex ? chain.findLastIndex((name) => String(name || "").trim() === selfName) : chain.lastIndexOf(selfName);
+    if (lastIndex >= 2) {
+      return String(chain[0] || "").trim();
+    }
+    if (lastIndex === -1 && chain.length >= 3) {
+      return String(chain[0] || "").trim();
+    }
+  }
+  if (!evolvesFromName) {
+    return "";
+  }
+  const previousCards = findCatalogCardsByExactName(evolvesFromName, cardLike && cardLike.series || "");
+  for (const previousCard of previousCards) {
+    const previousName = String(previousCard && previousCard.name || "").trim();
+    if (!previousName) {
+      continue;
+    }
+    if (isBasicEvolutionStageValue(resolveEvolutionStageForEntry(previousCard))) {
+      return previousName;
+    }
+    const nested = resolveRareCandyBasicNameForEntry(previousCard, visitedSet);
+    if (nested) {
+      return nested;
+    }
+  }
+  return "";
+}
+
+function canUseAbilityNow(card, ability, { silent = false } = {}) {
+  const reason = getAbilityUnavailableReason(card, ability);
+  if (reason && !silent) {
+    showToast(reason, "warn", 1800);
+  }
+  return !reason;
+}
+
+function chooseAbilityForCard(card, abilities) {
+  const list = Array.isArray(abilities) ? abilities : getActivatableAbilitiesForCard(card);
+  if (list.length <= 1) {
+    return list[0] || null;
+  }
+  const promptText = list.map((ability, index) => `${index + 1}. ${ability.name || `特性 ${index + 1}`}`).join("\n");
+  const answer = window.prompt(`選擇要使用的特性：\n${promptText}`, "1");
+  const pickedIndex = Math.max(1, Math.min(list.length, parseInt(answer, 10) || 1));
+  return list[pickedIndex - 1] || null;
+}
+
+function buildAbilityContext(card, ability) {
+  const opponentOwner = card.owner === "player1" ? "opponent" : "player1";
+  const defender = getActiveCard(opponentOwner);
+  const pseudoAttack = {
+    index: Number(ability && ability.index) || 1,
+    name: String(ability && ability.name || "特性").trim(),
+    damage: "0",
+    effect_text: String(ability && (ability.effect_text || ability.effect || ability.text) || "").trim()
+  };
+  const context = typeof buildEffectContext === "function"
+    ? buildEffectContext(card, defender, pseudoAttack)
+    : {
+      attacker: card,
+      defender,
+      attack: pseudoAttack,
+      owner: card.owner,
+      opponentOwner,
+      baseDamage: 0,
+      runtime: { cancelBaseDamage: false, attackFailed: false }
+    };
+  context.ability = ability;
+  context.sourceType = "ability";
+  return context;
+}
+
+async function executeAbilityEffects(card, ability) {
+  const specs = resolveAbilityEffectSpecs(card, ability);
+  if (specs.length === 0) {
+    showToast(`${card.name} 的特性尚未設定可執行效果`, "warn", 1800);
+    return { success: false, executed: false };
+  }
+  const context = buildAbilityContext(card, ability);
+  let executed = false;
+  for (const spec of specs) {
+    const status = String(spec && spec.status || "").trim();
+    if (typeof executeEffectSpec === "function") {
+      const result = await executeEffectSpec(spec, context);
+      if (result && result.cancelled) {
+        return { success: false, executed: false, cancelled: true };
+      }
+      const didRun = status !== "pending" && status !== "error" && status !== "skip";
+      if (didRun && result && result.success !== false) {
+        executed = true;
+      }
+    }
+  }
+  return { success: executed, executed };
+}
+
+async function useCardAbility(card, ability = null, { broadcast = true, fromRemote = false } = {}) {
+  if (!card) {
+    return false;
+  }
+  if (state.gamePhase !== "遊戲中") {
+    showToast("目前無法使用特性", "warn", 1500);
+    return false;
+  }
+  const availableAbilities = getActivatableAbilitiesForCard(card);
+  if (availableAbilities.length === 0) {
+    showToast("此寶可夢目前沒有可主動使用的特性", "warn", 1800);
+    return false;
+  }
+  const selectedAbility = ability || chooseAbilityForCard(card, availableAbilities);
+  if (!selectedAbility) {
+    return false;
+  }
+  if (!canUseAbilityNow(card, selectedAbility, { silent: false })) {
+    return false;
+  }
+  if (!fromRemote && !state.singlePlayer && card.owner !== "player1") {
+    showToast("多人模式只能使用我方寶可夢特性", "warn", 1500);
+    return false;
+  }
+  if (!fromRemote && abilityRequiresOwnTurn(selectedAbility) && state.turn.currentOwner !== card.owner) {
+    showToast("目前不是該方可使用特性的回合", "warn", 1800);
+    return false;
+  }
+  if (broadcast && state.peer.multiplayerEnabled && !fromRemote) {
+    sendPeerAction({
+      type: ACTION_TYPES.USE_ABILITY,
+      syncId: card.syncId,
+      abilityIndex: Number(selectedAbility.index) || 1,
+      abilityName: selectedAbility.name || "特性"
+    });
+  }
+  void showAttackBanner(`${card.name} 發動特性 ${selectedAbility.name || "特性"}！`);
+  const result = await executeAbilityEffects(card, selectedAbility);
+  if (result.executed) {
+    markAbilityUsedThisTurn(card, selectedAbility);
+    appendGameLog(`${ownerLabel(card.owner)}的 ${card.name} 發動特性「${selectedAbility.name || "特性"}」`);
+  }
+  // 特性造成的傷害也可能導致氣絕
+  await checkAndHandleKnockouts();
+  return !!result.executed;
+}
+
+function resolveTrainerEffectSpecs(card) {
+  if (!card || typeof resolveEffectSpecs !== "function") {
+    return [];
+  }
+  return []
+    .concat(resolveEffectSpecs(card, "trainer", 0))
+    .concat(resolveEffectSpecs(card, "trainer", 1))
+    .concat(resolveEffectSpecs(card, "card", 0))
+    .concat(resolveEffectSpecs(card, "card", 1));
+}
+
+function buildTrainerEffectContext(card) {
+  const opponentOwner = card.owner === "player1" ? "opponent" : "player1";
+  const defender = getActiveCard(opponentOwner);
+  const pseudoAttack = {
+    index: 1,
+    name: String(card.name || "訓練家卡").trim(),
+    damage: "0",
+    effect_text: String(card.effectText || card.ruleText || "").trim()
+  };
+  const context = typeof buildEffectContext === "function"
+    ? buildEffectContext(card, defender, pseudoAttack)
+    : {
+      attacker: card,
+      defender,
+      attack: pseudoAttack,
+      owner: card.owner,
+      opponentOwner,
+      baseDamage: 0,
+      runtime: { cancelBaseDamage: false, attackFailed: false }
+    };
+  context.card = card;
+  context.sourceType = "trainer";
+  return context;
+}
+
+async function executeTrainerCardEffects(card) {
+  const specs = resolveTrainerEffectSpecs(card);
+  if (specs.length === 0) {
+    showToast(`${card.name} 尚未設定可執行的訓練家卡效果`, "warn", 2000);
+    return { success: false, executed: false };
+  }
+  const context = buildTrainerEffectContext(card);
+  let executed = false;
+  let success = false;
+  for (const spec of specs) {
+    const status = String(spec && spec.status || "").trim();
+    if (typeof executeEffectSpec === "function") {
+      const result = await executeEffectSpec(spec, context);
+      const didRun = status !== "pending" && status !== "error" && status !== "skip";
+      if (didRun && result && result.success !== false) {
+        executed = true;
+        success = true;
+      }
+      if (result && result.cancelled) {
+        return { success: false, executed: false, cancelled: true };
+      }
+    }
+  }
+  return { success, executed: executed && success };
+}
+
+async function playTrainerCardFromHand(card, { broadcast = true, fromRemote = false } = {}) {
+  if (!card || !isTrainerCard(card)) {
+    return false;
+  }
+  if (!fromRemote && state.gamePhase !== "遊戲中") {
+    showToast("目前無法使用訓練家卡", "warn", 1500);
+    return false;
+  }
+  if (!fromRemote && !state.singlePlayer && state.turn.currentOwner !== card.owner) {
+    showToast("目前不是你的回合，無法使用訓練家卡", "warn", 1500);
+    return false;
+  }
+  const revealZone = getOwnerRevealZone(card.owner);
+  if (card.zoneId !== revealZone) {
+    const beforeReveal = snapshotCardZones();
+    clearLatestHighlights();
+    moveCardToZone(card, revealZone);
+    renderBoardForMovedCards(beforeReveal, [card.id]);
+    broadcastMoveSync([card.id], beforeReveal);
+    broadcastZoneStats([beforeReveal[card.id], revealZone]);
+  }
+  if (broadcast && state.peer.multiplayerEnabled && !fromRemote) {
+    sendPeerAction({
+      type: ACTION_TYPES.PLAY_TRAINER,
+      syncId: card.syncId,
+      cardName: card.name || "訓練家卡"
+    });
+  }
+  void showAttackBanner(`${ownerLabel(card.owner)}使用 ${card.name}！`);
+  appendGameLog(`${ownerLabel(card.owner)}使用訓練家卡「${card.name}」`);
+  const result = await executeTrainerCardEffects(card);
+  if (!result.executed) {
+    // 取消或無效果 → 直接送棄牌區（視為已使用但無動作）
+    const discardTarget = getOwnerDiscardZone(card.owner);
+    if (card.zoneId !== discardTarget) {
+      const beforeRollback = snapshotCardZones();
+      moveCardToZone(card, discardTarget);
+      renderBoardForMovedCards(beforeRollback, [card.id]);
+      broadcastMoveSync([card.id], beforeRollback);
+      broadcastZoneStats([beforeRollback[card.id], discardTarget]);
+    }
+    return false;
+  }
+  const currentZone = card.zoneId;
+  const nextZone = isStadiumTrainer(card) ? "stadium" : getOwnerDiscardZone(card.owner);
+  if (currentZone !== nextZone) {
+    const beforeExit = snapshotCardZones();
+    if (nextZone === "stadium") {
+      moveToStadium([card]);
+    } else {
+      moveCardToZone(card, nextZone);
+    }
+    renderBoardForMovedCards(beforeExit, [card.id]);
+    broadcastMoveSync([card.id], beforeExit);
+    broadcastZoneStats([beforeExit[card.id], nextZone]);
+  }
+  // 訓練家卡效果後檢查氣絕
+  await checkAndHandleKnockouts();
+  return true;
+}
+
 function startTurnSystem(firstOwner) {
   state.turn.active = true;
   state.turn.currentOwner = firstOwner || "player1";
@@ -6698,9 +7481,18 @@ async function resolveBetweenTurnEffects() {
       }
     }
   }
+  if (typeof runBetweenTurnEffectHooks === "function") {
+    const nextOwner = state.turn.currentOwner === "player1" ? "opponent" : "player1";
+    await runBetweenTurnEffectHooks({
+      endingOwner: state.turn.currentOwner,
+      nextOwner
+    });
+  }
   if (changedZones.size > 0) {
     renderBoard({ zoneIds: Array.from(changedZones), overlay: false });
   }
+  // 中毒/燒傷傷害後檢查氣絕
+  await checkAndHandleKnockouts();
 }
 
 // ═══════════════════════════════════════════════
@@ -7049,7 +7841,8 @@ function openAttackSelectModal(card) {
 
   for (const atk of attacks) {
     const item = document.createElement("div");
-    item.className = "attack-select-item";
+    const canUse = meetsEnergyCost(card, atk);
+    item.className = "attack-select-item" + (canUse ? "" : " attack-disabled");
 
     const costDiv = document.createElement("div");
     costDiv.className = "attack-cost";
@@ -7081,10 +7874,18 @@ function openAttackSelectModal(card) {
       item.appendChild(effectDiv);
     }
 
-    item.addEventListener("click", () => {
-      closeAttackSelectModal();
-      void executeAttack(card, atk);
-    });
+    if (canUse) {
+      item.addEventListener("click", () => {
+        closeAttackSelectModal();
+        void executeAttack(card, atk);
+      });
+    } else {
+      item.style.opacity = "0.4";
+      item.style.cursor = "not-allowed";
+      item.addEventListener("click", () => {
+        showToast("能量不足，無法使用此招式", "warn", 1500);
+      });
+    }
     list.appendChild(item);
   }
 
@@ -7136,6 +7937,13 @@ async function executeAttack(card, attack, { broadcast = true, fromRemote = fals
   if (!card || !attack) return;
   const owner = card.owner;
 
+  if (typeof canAttackWithEffects === "function") {
+    const verdict = canAttackWithEffects(card, attack);
+    if (verdict && verdict.allowed === false) {
+      return;
+    }
+  }
+
   if (!fromRemote) {
     if (card.behaviorStatus === "paralyzed") {
       showToast(`${card.name} 處於麻痺狀態，無法攻擊`, "warn", 2000);
@@ -7179,6 +7987,54 @@ async function executeAttack(card, attack, { broadcast = true, fromRemote = fals
 
   await showAttackBanner(`${card.name} 使出 ${attack.name}！`);
   state.turn.hasAttackedThisTurn = true;
+
+  let totalDamage = parseInt(attack.damage, 10) || 0;
+  let attackCancelled = false;
+  let ignoreWeakness = false;
+  if (typeof resolveAndExecuteAttackEffects === "function") {
+    const effectResult = await resolveAndExecuteAttackEffects(card, attack);
+    if (effectResult && effectResult.cancel_attack) {
+      attackCancelled = true;
+      totalDamage = 0;
+      if (typeof showToast === "function") showToast("攻擊失敗！", "warn", 1200);
+    } else {
+      totalDamage += (effectResult && effectResult.damage_modifier) || 0;
+      if (effectResult && effectResult.ignoreWeakness) ignoreWeakness = true;
+    }
+  }
+  if (!attackCancelled && totalDamage > 0) {
+    const opponentOwner = owner === "player1" ? "opponent" : "player1";
+    const targetZone = opponentOwner + "-active";
+    const targetCard = getActiveCard(opponentOwner);
+    if (targetCard) {
+      // 弱點/抗性計算
+      totalDamage = applyWeaknessResistance(card, targetCard, totalDamage, ignoreWeakness);
+      // 效果系統的傷害減免（保護/防禦效果）
+      if (typeof applyIncomingAttackModifiers === "function") {
+        const modified = applyIncomingAttackModifiers(card, targetCard, totalDamage, {
+          attack,
+          source: "attack"
+        });
+        totalDamage = modified && Number.isFinite(modified.damage) ? modified.damage : totalDamage;
+      }
+      if (totalDamage > 0) {
+        adjustCardDamage(targetCard, totalDamage, targetZone);
+        renderBoard({ zoneIds: [targetZone], overlay: false });
+        broadcastCardStats(targetCard);
+        if (typeof handleAfterAttackDamage === "function") {
+          await handleAfterAttackDamage({
+            attacker: card,
+            defender: targetCard,
+            attack,
+            actualDamage: totalDamage
+          });
+        }
+      }
+    }
+  }
+
+  // 攻擊後檢查氣絕
+  await checkAndHandleKnockouts();
 
   if (!fromRemote) {
     await delayMs(400);
@@ -8155,6 +9011,9 @@ function broadcastMoveSync(cardIds, beforeMap = null) {
       pos: getCardRelativePos(card.id),
       isFaceUp: !!card.isFaceUp,
       ...buildCardIdentityPayload(card),
+      playedFromHandToEvolveTurn: Number(card.playedFromHandToEvolveTurn) || 0,
+      playedFromHandToEvolveSourceZone: String(card.playedFromHandToEvolveSourceZone || ""),
+      playedFromHandToEvolveTargetZone: String(card.playedFromHandToEvolveTargetZone || ""),
       poison: !!card.poison,
       burn: !!card.burn,
       behaviorStatus: card.behaviorStatus || "",
@@ -8203,6 +9062,9 @@ function applyRemoteMove(data) {
     beforeMap.set(card.id, card.zoneId);
     moveCardToZone(card, toZone);
     targetZones.add(toZone);
+    card.playedFromHandToEvolveTurn = Number(mv.playedFromHandToEvolveTurn) || 0;
+    card.playedFromHandToEvolveSourceZone = String(mv.playedFromHandToEvolveSourceZone || "");
+    card.playedFromHandToEvolveTargetZone = String(mv.playedFromHandToEvolveTargetZone || "");
     card.poison = !!mv.poison;
     card.burn = !!mv.burn;
     card.behaviorStatus = String(mv.behaviorStatus || "");
@@ -8236,6 +9098,12 @@ function applyRemoteStats(data) {
     }
   });
   renderBoard({ zoneIds: [...affectedZones], overlay: false });
+  // 遠端傷害同步後也要檢查氣絕
+  clearTimeout(runtime.knockoutCheckTimer);
+  runtime.knockoutCheckTimer = setTimeout(() => {
+    runtime.knockoutCheckTimer = null;
+    checkAndHandleKnockouts();
+  }, 500);
 }
 
 function reorderDeckBySyncIds(owner, syncOrder) {
@@ -8381,6 +9249,22 @@ async function onPeerData(data) {
         const attacks = resolveAttacksForCard(remoteCard);
         const atk = attacks.find(a => a.index === data.attackIndex) || { name: data.attackName || "招式", index: data.attackIndex };
         await executeAttack(remoteCard, atk, { broadcast: false, fromRemote: true });
+      }
+    } else if (data.type === ACTION_TYPES.USE_ABILITY) {
+      const remoteCard = getCardBySyncKey("opponent", data.syncId);
+      if (remoteCard) {
+        const abilities = getActivatableAbilitiesForCard(remoteCard);
+        const ability = abilities.find((entry) => Number(entry.index) === Number(data.abilityIndex))
+          || abilities.find((entry) => String(entry.name || "").trim() === String(data.abilityName || "").trim())
+          || abilities[0];
+        if (ability) {
+          await useCardAbility(remoteCard, ability, { broadcast: false, fromRemote: true });
+        }
+      }
+    } else if (data.type === ACTION_TYPES.PLAY_TRAINER) {
+      const remoteCard = getCardBySyncKey("opponent", data.syncId);
+      if (remoteCard) {
+        await playTrainerCardFromHand(remoteCard, { broadcast: false, fromRemote: true });
       }
     } else if (data.type === ACTION_TYPES.END_TURN) {
       await applyRemoteEndTurn();
@@ -9254,6 +10138,9 @@ function isHandZone(zoneId) {
 }
 
 function canViewerSeeCardFront(card, zoneId) {
+  if (isOverlaySelectionActive() && zoneId === "effect-choice-view") {
+    return true;
+  }
   if (state.overlay.isOpen && state.overlay.type === "library" && zoneId === "library-view") {
     return state.singlePlayer || state.currentViewer === state.overlay.owner;
   }
@@ -9285,6 +10172,9 @@ function isCardMovableByViewer(card) {
   if (!card) {
     return false;
   }
+  if (isOverlaySelectionActive()) {
+    return false;
+  }
   if (state.singlePlayer) {
     return true;
   }
@@ -9302,7 +10192,11 @@ function isDropAllowedForCard(card, targetZoneId) {
   if (targetOwner === "neutral") {
     return true;
   }
-  return card.owner === targetOwner;
+  if (card.owner !== targetOwner) {
+    return false;
+  }
+  const placementRule = getHandPokemonPlacementRule(card, targetZoneId);
+  return !!placementRule.allowed;
 }
 
 function resetBattleState(card) {
@@ -9404,6 +10298,157 @@ function adjustCardDamage(card, delta, zoneId = card.zoneId) {
   if (actualDelta !== 0) {
     broadcastCardStats(card, zoneId);
   }
+  // 傷害增加後排程氣絕檢查（短延遲避免重入與動畫衝突）
+  if (actualDelta > 0) {
+    clearTimeout(runtime.knockoutCheckTimer);
+    runtime.knockoutCheckTimer = setTimeout(() => {
+      runtime.knockoutCheckTimer = null;
+      checkAndHandleKnockouts();
+    }, 500);
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 氣絕（Knockout）系統
+// ═══════════════════════════════════════════════
+async function checkAndHandleKnockouts() {
+  if (state.gamePhase !== "遊戲中") return;
+  if (runtime.knockoutCheckInProgress) return;
+  runtime.knockoutCheckInProgress = true;
+  try {
+    let found = true;
+    while (found) {
+      found = false;
+      for (const owner of ["player1", "opponent"]) {
+        const zones = [owner + "-active"];
+        for (let i = 1; i <= 8; i++) zones.push(owner + "-bench-" + i);
+        for (const zoneId of zones) {
+          const mainCards = getCardsInZone(zoneId);
+          if (mainCards.length === 0) continue;
+          const pokemon = mainCards[0];
+          if (!isPokemonCard(pokemon)) continue;
+          const catalogEntry = findDeckBuilderCatalogCardForEntry(pokemon);
+          const hp = Number(pokemon.hp || (catalogEntry && catalogEntry.hp) || 0);
+          if (hp <= 0) continue;
+          const damage = getZoneDamage(zoneId);
+          if (damage < hp) continue;
+          // 氣絕！
+          found = true;
+          const pokemonName = pokemon.name || "寶可夢";
+          const label = ownerLabel(owner);
+          void showAttackBanner(`${label}的 ${pokemonName} 氣絕！`);
+          appendGameLog(`${label}的 ${pokemonName} 氣絕！`);
+          // 收集主區+附加區所有卡片
+          const attachZoneId = UNIQUE_MAIN_TO_ATTACH[zoneId] || "";
+          const attachedCards = attachZoneId ? getCardsInZone(attachZoneId) : [];
+          const allCards = [pokemon, ...attachedCards];
+          const discardZone = getOwnerDiscardZone(owner);
+          const beforeMap = snapshotCardZones();
+          clearZoneDamage(zoneId);
+          for (const c of allCards) {
+            moveCardToZone(c, discardZone);
+          }
+          const movedIds = allCards.map(c => c.id);
+          renderBoardForMovedCards(beforeMap, movedIds);
+          broadcastMoveSync(movedIds, beforeMap);
+          broadcastZoneStats([zoneId, attachZoneId, discardZone].filter(Boolean));
+          // 通知 effect-engine 氣絕
+          const es = window.__effectEngineState;
+          if (es && es.knockoutsLastOpponentTurn) {
+            es.knockoutsLastOpponentTurn[owner] = true;
+          }
+          // 對手拿獎勵卡
+          const opponent = owner === "player1" ? "opponent" : "player1";
+          const isExOrRuleBox = /(?:ex|EX|V|VSTAR|VMAX|GX|TAG\s?TEAM)$/i.test(pokemonName);
+          const prizeCount = isExOrRuleBox ? 2 : 1;
+          for (let p = 0; p < prizeCount; p++) {
+            const prizeCards = getCardsInZone(getOwnerPrizeZone(opponent));
+            if (prizeCards.length === 0) break;
+            const prizeCard = prizeCards[0];
+            await animateMoveSingleCard(prizeCard, getOwnerHandZone(opponent), { faceUp: true, delayMs: 200 });
+            appendGameLog(`${ownerLabel(opponent)}拿取 1 張獎勵卡`);
+          }
+          renderBoard();
+          // 檢查獎勵卡歸零勝利
+          checkWinnerByPrize();
+          await delayMs(400);
+          // 如果是戰鬥場上的寶可夢被氣絕，需選擇備戰區替補
+          if (isActiveMainZone(zoneId)) {
+            const benchPokemon = [];
+            for (let b = 1; b <= 8; b++) {
+              const benchZone = owner + "-bench-" + b;
+              const benchCards = getCardsInZone(benchZone);
+              if (benchCards.length > 0 && isPokemonCard(benchCards[0])) {
+                benchPokemon.push(benchCards[0]);
+              }
+            }
+            if (benchPokemon.length === 0) {
+              // 無備戰區寶可夢 → 落敗
+              const loserLabel = ownerLabel(owner);
+              const winnerOwner = owner === "player1" ? "opponent" : "player1";
+              const winnerText = ownerLabel(winnerOwner);
+              showWinnerBanner(`WINNER! ${winnerText}`);
+              showToast(`${loserLabel}已無寶可夢可上場，${winnerText}獲勝！`, "success", 3000);
+              appendGameLog(`${loserLabel}已無寶可夢可上場，WINNER! ${winnerText}`);
+            } else if (benchPokemon.length === 1) {
+              // 只有一隻，自動上場
+              const replacement = benchPokemon[0];
+              const fromZone = replacement.zoneId;
+              const bMap = snapshotCardZones();
+              moveToUniqueMainZone(zoneId, [replacement]);
+              // 附加卡也要跟著移動
+              const oldAttach = UNIQUE_MAIN_TO_ATTACH[fromZone];
+              const newAttach = UNIQUE_MAIN_TO_ATTACH[zoneId];
+              if (oldAttach && newAttach) {
+                const attachCards = getCardsInZone(oldAttach);
+                for (const ac of attachCards) moveCardToZone(ac, newAttach);
+              }
+              transferZoneDamage(fromZone, zoneId);
+              const mIds = [replacement.id, ...getCardsInZone(newAttach || "").map(c => c.id)];
+              renderBoardForMovedCards(bMap, mIds);
+              broadcastMoveSync(mIds, bMap);
+              appendGameLog(`${label}的 ${replacement.name} 從備戰區移動到戰鬥區`);
+              await delayMs(300);
+            } else {
+              // 多隻 → 讓玩家選擇
+              const selected = await promptEffectCardChoice({
+                cards: benchPokemon,
+                title: "選擇替補上場的寶可夢",
+                hint: "戰鬥場的寶可夢氣絕了，請選擇備戰區的寶可夢上場",
+                owner,
+                minCount: 1,
+                maxCount: 1,
+                allowCancel: false,
+                confirmText: "上場"
+              });
+              if (selected.length > 0) {
+                const replacement = selected[0];
+                const fromZone = replacement.zoneId;
+                const bMap = snapshotCardZones();
+                moveToUniqueMainZone(zoneId, [replacement]);
+                const oldAttach = UNIQUE_MAIN_TO_ATTACH[fromZone];
+                const newAttach = UNIQUE_MAIN_TO_ATTACH[zoneId];
+                if (oldAttach && newAttach) {
+                  const attachCards = getCardsInZone(oldAttach);
+                  for (const ac of attachCards) moveCardToZone(ac, newAttach);
+                }
+                transferZoneDamage(fromZone, zoneId);
+                const mIds = [replacement.id, ...getCardsInZone(newAttach || "").map(c => c.id)];
+                renderBoardForMovedCards(bMap, mIds);
+                broadcastMoveSync(mIds, bMap);
+                appendGameLog(`${label}的 ${replacement.name} 從備戰區移動到戰鬥區`);
+                await delayMs(300);
+              }
+            }
+          }
+          break; // restart scan
+        }
+        if (found) break;
+      }
+    }
+  } finally {
+    runtime.knockoutCheckInProgress = false;
+  }
 }
 
 function applyZoneEnterRules(card, zoneId) {
@@ -9444,6 +10489,12 @@ function moveCardToZone(card, zoneId) {
     clearZoneDamage(fromZoneId);
   }
   applyZoneEnterRules(card, zoneId);
+  if (fromZoneId !== zoneId && typeof notifyCardMovedForEffects === "function") {
+    notifyCardMovedForEffects(card, fromZoneId, zoneId);
+  }
+  if (fromZoneId !== zoneId && typeof syncContinuousEffectState === "function") {
+    syncContinuousEffectState();
+  }
   if (fromZoneId !== zoneId) {
     if (!Array.isArray(state.latestCardByZone[zoneId])) {
       state.latestCardByZone[zoneId] = [];
@@ -9614,6 +10665,47 @@ function refreshSelectedCardClasses() {
   });
 }
 
+function clearEvolutionDragHighlights() {
+  document.querySelectorAll(".zone-slot.evolution-drop-allowed").forEach((el) => el.classList.remove("evolution-drop-allowed"));
+  document.querySelectorAll(".zone-slot.evolution-drop-disabled").forEach((el) => el.classList.remove("evolution-drop-disabled"));
+  document.querySelectorAll(".card.evolution-target-highlight").forEach((el) => el.classList.remove("evolution-target-highlight"));
+  document.querySelectorAll(".card.evolution-target-dim").forEach((el) => el.classList.remove("evolution-target-dim"));
+}
+
+function applyEvolutionDragHighlights() {
+  clearEvolutionDragHighlights();
+  if (state.draggingCardIds.length !== 1) {
+    return;
+  }
+  const card = getCardById(state.draggingCardIds[0]);
+  if (!card || card.zoneId !== getOwnerHandZone(card.owner) || !isEvolutionPokemonCard(card)) {
+    return;
+  }
+  MAIN_BATTLE_BENCH_ZONES
+    .filter((zoneId) => getZoneOwner(zoneId) === card.owner)
+    .forEach((zoneId) => {
+      const zone = document.getElementById(zoneId);
+      if (!zone) {
+        return;
+      }
+      const occupant = getCardsInZone(zoneId)[0] || null;
+      const rule = getHandPokemonPlacementRule(card, zoneId);
+      if (rule.allowed) {
+        zone.classList.add("evolution-drop-allowed");
+      } else {
+        zone.classList.add("evolution-drop-disabled");
+      }
+      if (!occupant) {
+        return;
+      }
+      const occupantEl = zone.querySelector(`.card[data-card-id="${occupant.id}"]`) || zone.querySelector(".card");
+      if (!occupantEl) {
+        return;
+      }
+      occupantEl.classList.add(rule.allowed ? "evolution-target-highlight" : "evolution-target-dim");
+    });
+}
+
 function updateDraggingUi() {
   document.body.classList.toggle("dragging-active", state.draggingCardIds.length > 0);
   document.querySelectorAll(".card[data-card-id]").forEach((el) => {
@@ -9623,6 +10715,7 @@ function updateDraggingUi() {
   if (state.draggingCardIds.length === 0) {
     setDragCursorIndicatorVisible(false);
   }
+  applyEvolutionDragHighlights();
 }
 
 function collectAffectedZoneIds(cardIds, beforeMap = null, extraZoneIds = []) {
@@ -9955,6 +11048,27 @@ function showStatusMenu(cardId, zoneId, x, y) {
     attackRow.classList.toggle("hidden", !allowAttack);
   }
 
+  const abilityRow = menu.querySelector(".ability-action-row");
+  if (abilityRow) {
+    const card = getCardById(cardId);
+    const allowAbility = !!card
+      && isBattleOrBenchMainZone(zoneId)
+      && getActivatableAbilitiesForCard(card).length > 0
+      && (state.singlePlayer || card.owner === "player1");
+    abilityRow.classList.toggle("hidden", !allowAbility);
+  }
+
+  const trainerRow = menu.querySelector(".trainer-action-row");
+  if (trainerRow) {
+    const card = getCardById(cardId);
+    const allowTrainer = !!card
+      && isTrainerCard(card)
+      && isHandZone(zoneId)
+      && state.gamePhase === "遊戲中"
+      && (state.singlePlayer || card.owner === "player1");
+    trainerRow.classList.toggle("hidden", !allowTrainer);
+  }
+
   state.statusMenu.isOpen = true;
   state.statusMenu.cardId = cardId;
   state.statusMenu.zoneId = zoneId;
@@ -10028,6 +11142,15 @@ function moveToStadium(incomingCards) {
   });
 }
 
+function markCardPlayedFromHandToEvolve(card, sourceZone, targetZone) {
+  if (!card) {
+    return;
+  }
+  card.playedFromHandToEvolveTurn = Number(state.turn.turnNumber || 0);
+  card.playedFromHandToEvolveSourceZone = String(sourceZone || "");
+  card.playedFromHandToEvolveTargetZone = String(targetZone || "");
+}
+
 function moveToUniqueMainZone(targetZoneId, incomingCards) {
   const attach = UNIQUE_MAIN_TO_ATTACH[targetZoneId];
 
@@ -10040,6 +11163,7 @@ function moveToUniqueMainZone(targetZoneId, incomingCards) {
   const sourceIsBattleOrBench = isBattleOrBenchMainZone(sourceZone);
   const existingMainCards = getCardsInZone(targetZoneId).filter((c) => c.id !== incomingFirst.id);
   const targetHasCards = existingMainCards.length > 0;
+  const playedFromHandToEvolve = isHandZone(sourceZone) && targetHasCards && isEvolutionPokemonCard(incomingFirst);
 
   // 來源是備戰/戰鬥主區且目標已有卡片 → 整組交換（主區+附加區）
   if (sourceIsBattleOrBench && targetHasCards && sourceZone !== targetZoneId) {
@@ -10071,6 +11195,9 @@ function moveToUniqueMainZone(targetZoneId, incomingCards) {
   }
 
   moveCardToZone(incomingFirst, targetZoneId);
+  if (playedFromHandToEvolve) {
+    markCardPlayedFromHandToEvolve(incomingFirst, sourceZone, targetZoneId);
+  }
   incomingCards.slice(1).forEach((c) => moveCardToZone(c, attach));
 }
 
@@ -10117,6 +11244,29 @@ function moveCardsToDeckBottom(owner, incomingCards) {
 
 function getAttachZoneForMainZone(mainZoneId) {
   return UNIQUE_MAIN_TO_ATTACH[mainZoneId] || "";
+}
+
+function getMainZoneForAttachZone(attachZoneId) {
+  return Object.keys(UNIQUE_MAIN_TO_ATTACH).find((mainZoneId) => UNIQUE_MAIN_TO_ATTACH[mainZoneId] === attachZoneId) || "";
+}
+
+function normalizeDropTargetZoneForCards(targetZoneId, incomingCards) {
+  if (!String(targetZoneId || "").endsWith("-attach")) {
+    return targetZoneId;
+  }
+  if (!Array.isArray(incomingCards) || incomingCards.length === 0) {
+    return targetZoneId;
+  }
+  const handPokemonCards = incomingCards.filter((card) =>
+    card
+    && card.zoneId === getOwnerHandZone(card.owner)
+    && !isTrainerCard(card)
+    && !isEnergyCard(card)
+  );
+  if (handPokemonCards.length !== incomingCards.length) {
+    return targetZoneId;
+  }
+  return getMainZoneForAttachZone(targetZoneId) || targetZoneId;
 }
 
 function swapZoneCards(zoneA, zoneB) {
@@ -10200,92 +11350,123 @@ function collectMovedCardIds(beforeMap) {
   return moved;
 }
 
-function handleDrop(targetZoneId, rawCardIds) {
+async function handleDrop(targetZoneId, rawCardIds) {
   // 開局抽牌動畫進行中時鎖定所有拖曳
   if (runtime.autoSetupRunning) return;
 
   const beforeMap = snapshotCardZones();
   const incomingCards = normalizeIncomingCardIds(rawCardIds);
-  const movableCards = incomingCards.filter((c) => isCardMovableByViewer(c) && isDropAllowedForCard(c, targetZoneId));
+  const resolvedTargetZoneId = normalizeDropTargetZoneForCards(targetZoneId, incomingCards);
+  const deniedRule = incomingCards
+    .map((card) => ({ card, verdict: getHandPokemonPlacementRule(card, resolvedTargetZoneId) }))
+    .find((entry) => entry && entry.verdict && entry.verdict.allowed === false);
+  const movableCards = incomingCards.filter((c) => isCardMovableByViewer(c) && isDropAllowedForCard(c, resolvedTargetZoneId));
 
   if (movableCards.length === 0) {
+    if (deniedRule && deniedRule.verdict && deniedRule.verdict.reason) {
+      showToast(deniedRule.verdict.reason, "warn", 1800);
+    }
+    return;
+  }
+
+  const trainerCardsToReveal = movableCards.filter((card) =>
+    isTrainerCard(card)
+    && isHandZone(card.zoneId)
+    && resolvedTargetZoneId === getOwnerRevealZone(card.owner)
+  );
+  if (trainerCardsToReveal.length > 1) {
+    showToast("一次只能使用 1 張訓練家卡", "warn", 1800);
+    return;
+  }
+  if (trainerCardsToReveal.length === 1) {
+    clearSelections({ refresh: true });
+    await playTrainerCardFromHand(trainerCardsToReveal[0]);
     return;
   }
 
   // 設置階段放置限制
   if (state.setupPhase.active) {
-    const blocked = movableCards.some((c) => !isSetupPlacementAllowed(c, targetZoneId));
+    const blocked = movableCards.some((c) => !isSetupPlacementAllowed(c, resolvedTargetZoneId));
     if (blocked) return;
   }
   logRendererDiagnostic("drop", {
     seq: runtime.diagnosticDragSeq,
-    targetZoneId,
+    targetZoneId: resolvedTargetZoneId,
     cardIds: movableCards.map((card) => card.id)
   });
   clearLatestHighlights();
 
-  if (tryHandleRetreatSwap(targetZoneId, movableCards)) {
+  if (tryHandleRetreatSwap(resolvedTargetZoneId, movableCards)) {
     const movedIds = collectMovedCardIds(beforeMap);
     clearSelections({ refresh: true });
     renderBoardForMovedCards(beforeMap, movedIds);
-    triggerDropEffects(targetZoneId, movedIds);
+    triggerDropEffects(resolvedTargetZoneId, movedIds);
     broadcastMoveSync(movedIds, beforeMap);
-    broadcastZoneStats([targetZoneId, ...movableCards.map((card) => beforeMap.get(card.id) || card.zoneId)]);
+    broadcastZoneStats([resolvedTargetZoneId, ...movableCards.map((card) => beforeMap.get(card.id) || card.zoneId)]);
     return;
   }
 
   movableCards.forEach((c) => {
     const fromDeck = c.zoneId === getOwnerDeckZone(c.owner) || state.overlay.type === "library";
-    if (fromDeck && !PRIZE_ZONES.has(targetZoneId) && targetZoneId !== "library-view" && targetZoneId !== "player1-deck" && targetZoneId !== "opponent-deck" && !isDeckBottomZone(targetZoneId)) {
+    if (fromDeck && !PRIZE_ZONES.has(resolvedTargetZoneId) && resolvedTargetZoneId !== "library-view" && resolvedTargetZoneId !== "player1-deck" && resolvedTargetZoneId !== "opponent-deck" && !isDeckBottomZone(resolvedTargetZoneId)) {
       c.isFaceUp = true;
     }
   });
 
-  if (targetZoneId === "stadium") {
+  if (resolvedTargetZoneId === "stadium") {
     moveToStadium(movableCards);
     const movedIds = collectMovedCardIds(beforeMap);
     clearSelections({ refresh: true });
     renderBoardForMovedCards(beforeMap, movedIds);
-    triggerDropEffects(targetZoneId, movedIds);
+    triggerDropEffects(resolvedTargetZoneId, movedIds);
     broadcastMoveSync(movedIds, beforeMap);
     broadcastZoneStats(movableCards.map((card) => beforeMap.get(card.id)));
     return;
   }
 
-  if (UNIQUE_MAIN_TO_ATTACH[targetZoneId]) {
-    moveToUniqueMainZone(targetZoneId, movableCards);
+  if (UNIQUE_MAIN_TO_ATTACH[resolvedTargetZoneId]) {
+    moveToUniqueMainZone(resolvedTargetZoneId, movableCards);
     const movedIds = collectMovedCardIds(beforeMap);
     clearSelections({ refresh: true });
     renderBoardForMovedCards(beforeMap, movedIds);
-    triggerDropEffects(targetZoneId, movedIds);
+    triggerDropEffects(resolvedTargetZoneId, movedIds);
     broadcastMoveSync(movedIds, beforeMap);
     broadcastZoneStats([
-      targetZoneId,
+      resolvedTargetZoneId,
       ...movableCards.map((card) => beforeMap.get(card.id)),
       ...movableCards.map((card) => card.zoneId)
     ]);
+    // 自動觸發「從手牌放置到備戰區時」特性（如喵喵ex），設置階段與戰鬥場不觸發
+    if (!state.setupPhase.active) {
+      for (const card of movableCards) {
+        const fromHand = beforeMap.get(card.id);
+        if (fromHand && isHandZone(fromHand) && isPokemonCard(card) && isBenchMainZone(card.zoneId)) {
+          await tryAutoTriggerPlacementAbility(card);
+        }
+      }
+    }
     return;
   }
 
-  if (PRIZE_ZONES.has(targetZoneId)) {
-    moveToPrizeZone(targetZoneId, movableCards);
+  if (PRIZE_ZONES.has(resolvedTargetZoneId)) {
+    moveToPrizeZone(resolvedTargetZoneId, movableCards);
     const movedIds = collectMovedCardIds(beforeMap);
     clearSelections({ refresh: true });
     renderBoardForMovedCards(beforeMap, movedIds);
-    triggerDropEffects(targetZoneId, movedIds);
+    triggerDropEffects(resolvedTargetZoneId, movedIds);
     broadcastMoveSync(movedIds, beforeMap);
     broadcastZoneStats(movableCards.map((card) => beforeMap.get(card.id)));
     return;
   }
 
-  if (isDeckBottomZone(targetZoneId)) {
-    const owner = getZoneOwner(targetZoneId);
+  if (isDeckBottomZone(resolvedTargetZoneId)) {
+    const owner = getZoneOwner(resolvedTargetZoneId);
     moveCardsToDeckBottom(owner, movableCards);
     const movedIds = movableCards.map((card) => card.id);
     const zoneChangedIds = movedIds.filter((cardId) => beforeMap[cardId] !== getOwnerDeckZone(owner));
     clearSelections({ refresh: true });
     renderBoard({
-      zoneIds: collectAffectedZoneIds(movedIds, beforeMap, [getOwnerDeckZone(owner), targetZoneId]),
+      zoneIds: collectAffectedZoneIds(movedIds, beforeMap, [getOwnerDeckZone(owner), resolvedTargetZoneId]),
       overlay: true,
       indicators: true,
       resources: true,
@@ -10305,42 +11486,42 @@ function handleDrop(targetZoneId, rawCardIds) {
     return;
   }
 
-  if (targetZoneId === "library-view" || targetZoneId === "discard-view") {
+  if (resolvedTargetZoneId === "library-view" || resolvedTargetZoneId === "discard-view") {
     clearSelections({ refresh: true });
     renderBoard({ zoneIds: [], overlay: true, indicators: false, resources: false, winner: false, animations: false });
     return;
   }
 
   // 拖曳到牌組區 → 放到牌組最上方
-  if (targetZoneId === "player1-deck" || targetZoneId === "opponent-deck") {
-    const owner = getZoneOwner(targetZoneId);
+  if (resolvedTargetZoneId === "player1-deck" || resolvedTargetZoneId === "opponent-deck") {
+    const owner = getZoneOwner(resolvedTargetZoneId);
     moveCardsToDeckTop(owner, movableCards);
     const movedIds = movableCards.map((card) => card.id);
     clearSelections({ refresh: true });
     renderBoard({
-      zoneIds: collectAffectedZoneIds(movedIds, beforeMap, [targetZoneId]),
+      zoneIds: collectAffectedZoneIds(movedIds, beforeMap, [resolvedTargetZoneId]),
       overlay: true,
       indicators: true,
       resources: true,
       winner: true,
       animations: true
     });
-    triggerDropEffects(targetZoneId, movedIds);
+    triggerDropEffects(resolvedTargetZoneId, movedIds);
     broadcastMoveSync(movedIds, beforeMap);
     broadcastZoneStats(movableCards.map((card) => beforeMap.get(card.id)));
     sendPeerAction({
       type: ACTION_TYPES.SHUFFLE,
       owner,
-      order: getCardsInZone(targetZoneId).map((card) => card.syncId)
+      order: getCardsInZone(resolvedTargetZoneId).map((card) => card.syncId)
     });
     return;
   }
 
-  moveToGenericZone(targetZoneId, movableCards);
+  moveToGenericZone(resolvedTargetZoneId, movableCards);
   const movedIds = collectMovedCardIds(beforeMap);
   clearSelections({ refresh: true });
   renderBoardForMovedCards(beforeMap, movedIds);
-  triggerDropEffects(targetZoneId, movedIds);
+  triggerDropEffects(resolvedTargetZoneId, movedIds);
   broadcastMoveSync(movedIds, beforeMap);
   broadcastZoneStats(movableCards.map((card) => beforeMap.get(card.id)));
 }
@@ -10348,7 +11529,22 @@ function handleDrop(targetZoneId, rawCardIds) {
 function toggleCardSelected(cardId) {
   const card = getCardById(cardId);
   if (!card || !isCardMovableByViewer(card)) {
-    return;
+    if (!isOverlaySelectionActive()) {
+      return;
+    }
+  }
+
+  if (isOverlaySelectionActive()) {
+    const allowed = new Set(getOverlayChoiceCards().map((item) => Number(item.id)));
+    if (!allowed.has(Number(cardId))) {
+      return;
+    }
+    const alreadySelected = state.selectedCardIds.has(cardId);
+    const max = Math.max(1, Number(state.overlay.selectionMax) || 1);
+    if (!alreadySelected && getOverlaySelectedCardIds().length >= max) {
+      showToast(`最多只能選擇 ${max} 張卡片`, "warn", 1500);
+      return;
+    }
   }
 
   if (state.selectedCardIds.has(cardId)) {
@@ -10359,6 +11555,7 @@ function toggleCardSelected(cardId) {
 
   if (state.overlay.isOpen) {
     refreshSelectedCardClasses();
+    updateOverlaySelectionUi();
     return;
   }
 
@@ -10681,6 +11878,174 @@ function sortDeckOverlayCards(cardsInSource) {
     .flatMap((key) => (groups.get(key) || []).sort((a, b) => a.index - b.index).map((item) => item.card));
 }
 
+function resetOverlayConfig() {
+  state.overlay.type = null;
+  state.overlay.owner = null;
+  state.overlay.zoneId = null;
+  state.overlay.sourceZoneId = null;
+  state.overlay.title = "";
+  state.overlay.hint = "";
+  state.overlay.cards = [];
+  state.overlay.selectionMode = false;
+  state.overlay.selectionMin = 0;
+  state.overlay.selectionMax = 0;
+  state.overlay.selectionAllowCancel = true;
+  state.overlay.selectionConfirmText = "確認";
+  state.overlay.selectionCancelText = "取消";
+}
+
+function isOverlaySelectionActive() {
+  return !!(state.overlay.isOpen && state.overlay.selectionMode);
+}
+
+function getOverlayChoiceCards() {
+  return Array.isArray(state.overlay.cards) ? state.overlay.cards.filter(Boolean) : [];
+}
+
+function getOverlaySelectedCardIds() {
+  const allowed = new Set(getOverlayChoiceCards().map((card) => Number(card.id)));
+  return [...state.selectedCardIds].filter((cardId) => allowed.has(Number(cardId)));
+}
+
+function sortEffectChoiceCards(cardsInSource, sortMode = "") {
+  const list = Array.isArray(cardsInSource) ? cardsInSource.filter(Boolean) : [];
+  if (sortMode === "deck") {
+    return sortDeckOverlayCards(list);
+  }
+  return list;
+}
+
+function resolveOverlayHintText() {
+  if (!isOverlaySelectionActive()) {
+    return state.overlay.hint || "";
+  }
+  const selectedCount = getOverlaySelectedCardIds().length;
+  const min = Math.max(0, Number(state.overlay.selectionMin) || 0);
+  const max = Math.max(min, Number(state.overlay.selectionMax) || 0);
+  const rangeText = min === max
+    ? `請選擇 ${max} 張`
+    : `請選擇 ${min} 到 ${max} 張`;
+  const base = state.overlay.hint ? `${state.overlay.hint} ` : "";
+  return `${base}${rangeText}（已選 ${selectedCount} 張）`;
+}
+
+function updateOverlaySelectionUi() {
+  const toolbar = document.getElementById("overlay-selection-toolbar");
+  const status = document.getElementById("overlay-selection-status");
+  const confirmBtn = document.getElementById("overlay-selection-confirm");
+  const cancelBtn = document.getElementById("overlay-selection-cancel");
+  const closeBtn = document.getElementById("overlay-close");
+  const active = isOverlaySelectionActive();
+  document.body.classList.toggle("selection-modal-active", active);
+  if (toolbar) {
+    toolbar.classList.toggle("hidden", !active);
+  }
+  if (!active) {
+    if (closeBtn) {
+      closeBtn.classList.remove("hidden");
+      closeBtn.disabled = false;
+      closeBtn.textContent = "X";
+    }
+    return;
+  }
+  const selectedCount = getOverlaySelectedCardIds().length;
+  const min = Math.max(0, Number(state.overlay.selectionMin) || 0);
+  const max = Math.max(min, Number(state.overlay.selectionMax) || 0);
+  if (status) {
+    status.textContent = `已選 ${selectedCount} / ${max} 張`;
+  }
+  if (confirmBtn) {
+    confirmBtn.textContent = state.overlay.selectionConfirmText || "確認";
+    confirmBtn.disabled = selectedCount < min || selectedCount > max;
+  }
+  if (cancelBtn) {
+    cancelBtn.textContent = state.overlay.selectionCancelText || "取消";
+    cancelBtn.classList.toggle("hidden", !state.overlay.selectionAllowCancel);
+  }
+  if (closeBtn) {
+    closeBtn.classList.toggle("hidden", !state.overlay.selectionAllowCancel);
+    closeBtn.disabled = !state.overlay.selectionAllowCancel;
+    closeBtn.textContent = state.overlay.selectionAllowCancel ? "取消" : "X";
+  }
+}
+
+function resolveOverlayCards() {
+  if (isOverlaySelectionActive()) {
+    return getOverlayChoiceCards();
+  }
+  const sourceZone = state.overlay.type === "library"
+    ? getOwnerDeckZone(state.overlay.owner)
+    : getOwnerDiscardZone(state.overlay.owner);
+  return state.overlay.type === "library"
+    ? sortDeckOverlayCards(getCardsInZone(sourceZone))
+    : getCardsInZone(sourceZone);
+}
+
+function finishOverlayChoice(selectedCards = []) {
+  const resolver = runtime.pendingOverlayChoiceResolve;
+  runtime.pendingOverlayChoiceResolve = null;
+  if (typeof resolver === "function") {
+    resolver(Array.isArray(selectedCards) ? selectedCards.filter(Boolean) : []);
+  }
+}
+
+function cancelOverlayChoice() {
+  runtime.overlayChoiceCancelled = true;
+  closeOverlay({ resolveChoice: false });
+  finishOverlayChoice([]);
+}
+
+function confirmOverlayChoice() {
+  if (!isOverlaySelectionActive()) {
+    return;
+  }
+  const selectedIds = new Set(getOverlaySelectedCardIds().map((value) => Number(value)));
+  const selectedCards = getOverlayChoiceCards().filter((card) => selectedIds.has(Number(card.id)));
+  const min = Math.max(0, Number(state.overlay.selectionMin) || 0);
+  if (selectedCards.length < min) {
+    showToast(`至少要選擇 ${min} 張卡片`, "warn", 1800);
+    return;
+  }
+  runtime.overlayChoiceCancelled = false;
+  closeOverlay({ resolveChoice: false });
+  finishOverlayChoice(selectedCards);
+}
+
+function promptEffectCardChoice(options = {}) {
+  const orderedCards = sortEffectChoiceCards(options.cards, options.sortMode);
+  if (runtime.pendingOverlayChoiceResolve) {
+    finishOverlayChoice([]);
+  }
+  if (orderedCards.length === 0) {
+    return Promise.resolve([]);
+  }
+  clearSelections();
+  hideDeckMenu();
+  hideStatusMenu();
+  hideCardZoom();
+  runtime.overlayChoiceCancelled = false;
+  state.overlay.isOpen = true;
+  resetOverlayConfig();
+  state.overlay.type = "selection";
+  state.overlay.owner = String(options.owner || orderedCards[0]?.owner || "player1");
+  state.overlay.zoneId = String(options.zoneId || "effect-choice-view");
+  state.overlay.sourceZoneId = String(options.sourceZoneId || orderedCards[0]?.zoneId || "");
+  state.overlay.title = String(options.title || "選擇卡片");
+  state.overlay.hint = String(options.hint || "");
+  state.overlay.cards = orderedCards;
+  state.overlay.selectionMode = true;
+  state.overlay.selectionMin = Math.max(0, Number(options.minCount));
+  state.overlay.selectionMax = Math.max(state.overlay.selectionMin, Number(options.maxCount) || orderedCards.length);
+  state.overlay.selectionAllowCancel = options.allowCancel !== false;
+  state.overlay.selectionConfirmText = String(options.confirmText || "確認");
+  state.overlay.selectionCancelText = String(options.cancelText || "取消");
+  renderOverlayView();
+  updateOverlaySelectionUi();
+  return new Promise((resolve) => {
+    runtime.pendingOverlayChoiceResolve = resolve;
+  });
+}
+
 function clearZoneCards(zoneId) {
   const zone = getZoneElement(zoneId);
   if (!zone) {
@@ -10782,7 +12147,8 @@ function renderOverlayView() {
 
   if (!state.overlay.isOpen) {
     runtime.overlayRenderToken += 1;
-    hideWithAnimation(overlayRoot);
+    overlayRoot.classList.add("hidden");
+    overlayRoot.classList.remove("selection-mode");
     overlayRoot.setAttribute("aria-hidden", "true");
     overlayZone.dataset.zoneId = "";
     overlayZone.innerHTML = "";
@@ -10798,38 +12164,42 @@ function renderOverlayView() {
 
   overlayRoot.classList.remove("hidden");
   overlayRoot.setAttribute("aria-hidden", "false");
-  overlayRoot.classList.toggle("overlay-left", !!state.singlePlayer && state.overlay.owner === "opponent");
+  const overlayCardsOwner = state.overlay.cards && state.overlay.cards.length > 0 ? state.overlay.cards[0].owner : state.overlay.owner;
+  const showOnLeft = !!state.singlePlayer && (state.overlay.owner === "opponent" || overlayCardsOwner === "opponent");
+  overlayRoot.classList.toggle("overlay-left", showOnLeft);
+  overlayRoot.classList.toggle("selection-mode", isOverlaySelectionActive());
 
   const isOwnerViewer = state.singlePlayer || state.currentViewer === state.overlay.owner;
   const titleOwner = state.overlay.owner === "player1" ? "我方" : "對手";
-  overlayTitle.textContent = state.overlay.type === "library" ? `${titleOwner}牌庫視窗` : `${titleOwner}棄牌區視窗`;
+  overlayTitle.textContent = state.overlay.title
+    || (state.overlay.type === "library" ? `${titleOwner}牌庫視窗` : `${titleOwner}棄牌區視窗`);
 
   overlayZone.dataset.zoneId = state.overlay.zoneId;
   overlayZone.innerHTML = "";
 
-  if (!isOwnerViewer && state.overlay.type === "library") {
+  if (!isOverlaySelectionActive() && !isOwnerViewer && state.overlay.type === "library") {
     overlayHint.classList.remove("hidden");
     overlayHint.textContent = "對手正在查看牌組";
+    updateOverlaySelectionUi();
     return;
   }
 
-  overlayHint.classList.add("hidden");
-  overlayHint.textContent = "";
+  const hintText = resolveOverlayHintText();
+  overlayHint.classList.toggle("hidden", !hintText);
+  overlayHint.textContent = hintText;
 
-  const sourceZone = state.overlay.type === "library"
-    ? getOwnerDeckZone(state.overlay.owner)
-    : getOwnerDiscardZone(state.overlay.owner);
-  const cardsInSource = state.overlay.type === "library"
-    ? sortDeckOverlayCards(getCardsInZone(sourceZone))
-    : getCardsInZone(sourceZone);
+  const cardsInSource = resolveOverlayCards();
   renderOverlayCardsInBatches(overlayZone, cardsInSource, (card) => ({
     zoneId: state.overlay.zoneId,
-    forceBack: state.overlay.type === "library" ? !isOwnerViewer : false,
-    addMoveClass: true
+    forceBack: isOverlaySelectionActive() ? false : (state.overlay.type === "library" ? !isOwnerViewer : false),
+    addMoveClass: true,
+    allowDrag: !isOverlaySelectionActive(),
+    selectable: true
   }), {
     top: state.overlay.scrollTop,
     left: state.overlay.scrollLeft
   });
+  updateOverlaySelectionUi();
 }
 
 function renderActiveZoneStatusIndicators() {
@@ -10985,6 +12355,7 @@ function drawCardFromDeck(owner, fromBottom = false) {
 
 function openOverlay(type, owner) {
   state.overlay.isOpen = true;
+  resetOverlayConfig();
   state.overlay.type = type;
   state.overlay.owner = owner;
   state.overlay.zoneId = type === "library" ? "library-view" : "discard-view";
@@ -10993,14 +12364,19 @@ function openOverlay(type, owner) {
   renderOverlayView();
 }
 
-function closeOverlay() {
+function closeOverlay(options = {}) {
+  const shouldResolveChoice = isOverlaySelectionActive() && options.resolveChoice !== false;
   state.overlay.isOpen = false;
-  state.overlay.type = null;
-  state.overlay.owner = null;
-  state.overlay.zoneId = null;
+  state.overlay.selectionMode = false;
+  resetOverlayConfig();
   clearSelections();
   hideCardZoom();
+  document.body.classList.remove("selection-modal-active");
   renderOverlayView();
+  updateOverlaySelectionUi();
+  if (shouldResolveChoice) {
+    finishOverlayChoice([]);
+  }
 }
 
 function hideDeckMenu() {
@@ -11207,7 +12583,7 @@ function setupDropzones() {
       }
 
       state.draggingCardIds = [];
-      handleDrop(zoneId, payloadIds);
+      void handleDrop(zoneId, payloadIds);
       updateDraggingUi();
       setDragCursorIndicatorVisible(false);
       // 補回拖曳期間延遲的 overlay 重新渲染
@@ -11292,7 +12668,7 @@ function setupDropzones() {
     }
 
     state.draggingCardIds = [];
-    handleDrop(state.overlay.zoneId, payloadIds);
+    void handleDrop(state.overlay.zoneId, payloadIds);
     updateDraggingUi();
     setDragCursorIndicatorVisible(false);
     // 補回拖曳期間延遲的 overlay 重新渲染
@@ -11320,6 +12696,10 @@ function setupDeckMenu() {
       event.preventDefault();
       event.stopPropagation();
 
+      if (isOverlaySelectionActive()) {
+        return;
+      }
+
       if (state.selectedCardIds.size > 0) {
         clearSelections({ refresh: true });
       }
@@ -11329,6 +12709,10 @@ function setupDeckMenu() {
         return;
       }
 
+      if (state.overlay.isOpen) {
+        closeOverlay();
+      }
+      document.body.classList.remove("selection-modal-active");
       hideStatusMenu();
       showDeckMenu(zoneId);
     };
@@ -11413,6 +12797,20 @@ function setupStatusMenu() {
       return;
     }
 
+    if (action === "ability") {
+      hideStatusMenu();
+      void useCardAbility(card);
+      return;
+    }
+
+    if (action === "use-trainer") {
+      hideStatusMenu();
+      if (isTrainerCard(card) && isHandZone(card.zoneId)) {
+        void playTrainerCardFromHand(card);
+      }
+      return;
+    }
+
     applyStatusAction(card, action);
     hideStatusMenu();
   });
@@ -11423,7 +12821,23 @@ function setupOverlayActions() {
   if (closeBtn) {
     closeBtn.addEventListener("click", () => {
       hideCardZoom();
+      if (isOverlaySelectionActive()) {
+        cancelOverlayChoice();
+        return;
+      }
       closeOverlay();
+    });
+  }
+  const confirmBtn = document.getElementById("overlay-selection-confirm");
+  if (confirmBtn) {
+    confirmBtn.addEventListener("click", () => {
+      confirmOverlayChoice();
+    });
+  }
+  const cancelBtn = document.getElementById("overlay-selection-cancel");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", () => {
+      cancelOverlayChoice();
     });
   }
 
@@ -11614,7 +13028,8 @@ function setupGlobalInteractions() {
       const isCard = !!target.closest(".card");
       const inDeckZone = !!target.closest(".deck-zone");
       const inMenu = !!target.closest("#deck-context-menu") || !!target.closest("#status-context-menu");
-      if ((!isCard || inDeckZone) && !inMenu) {
+      const inOverlay = !!target.closest("#overlay-root");
+      if ((!isCard || inDeckZone) && !inMenu && !inOverlay) {
         clearSelections({ refresh: true });
       }
     }
@@ -11623,7 +13038,14 @@ function setupGlobalInteractions() {
       const inOverlay = !!target.closest("#overlay-root");
       if (!inOverlay) {
         hideCardZoom();
-        closeOverlay();
+        if (isOverlaySelectionActive() && !state.overlay.selectionAllowCancel) {
+          return;
+        }
+        if (isOverlaySelectionActive()) {
+          cancelOverlayChoice();
+        } else {
+          closeOverlay();
+        }
       }
     }
   }, true);
@@ -11999,6 +13421,20 @@ if (IS_DECK_BUILDER_WINDOW) {
 } else {
   initializeMainApp();
 }
+
+window.promptEffectCardChoice = promptEffectCardChoice;
+window.reorderDeck = reorderDeck;
+window.fisherYatesShuffle = fisherYatesShuffle;
+window.resolveEnergyProvides = resolveEnergyProvides;
+window.consumeOverlayChoiceCancelled = function consumeOverlayChoiceCancelled() {
+  const cancelled = !!runtime.overlayChoiceCancelled;
+  runtime.overlayChoiceCancelled = false;
+  return cancelled;
+};
+window.resolveRareCandyBasicNameForEntry = resolveRareCandyBasicNameForEntry;
+window.checkAndHandleKnockouts = checkAndHandleKnockouts;
+window.triggerShuffleAnimation = triggerShuffleAnimation;
+window.queueMoveAnimation = queueMoveAnimation;
 
 window.boardState = {
   cards,
