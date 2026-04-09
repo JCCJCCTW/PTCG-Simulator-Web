@@ -27,6 +27,7 @@ jobs:
         run: |
           mkdir -p _site
           cp index.html app.js styles.css manifest.json sw.js _site/
+          cp effect-engine.js effect-handlers.js effect-custom-handlers.js _site/
           cp -r assets _site/
           cp -r wallpapers _site/
           cp -r deck-builder-data _site/
